@@ -4,6 +4,8 @@
 
 use std::io::Read;
 
+use std::ops::{Deref, DerefMut};
+use transport::cursor::Cursor as Shared;
 use transport::error::{Result, classify, protocol_error};
 
 pub const API_PRODUCE: i16 = 0;
@@ -90,56 +92,53 @@ impl Writer {
     }
 }
 
-/// Reads the primitive types.
-pub struct Reader<'a> {
-    bytes: &'a [u8],
-    at: usize,
+/// Reads the primitive types: the transport's cursor, with Kafka's fields
+/// named on it.
+pub struct Reader<'a>(Shared<'a>);
+
+impl<'a> Deref for Reader<'a> {
+    type Target = Shared<'a>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for Reader<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
 }
 
 impl<'a> Reader<'a> {
+    /// A cursor at the start of `bytes`.
     #[must_use]
     pub const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, at: 0 }
-    }
-
-    fn take(&mut self, count: usize) -> Result<&'a [u8]> {
-        let end = self
-            .at
-            .checked_add(count)
-            .filter(|end| *end <= self.bytes.len())
-            .ok_or_else(|| protocol_error("a field that runs past the message"))?;
-        let slice = &self.bytes[self.at..end];
-        self.at = end;
-        Ok(slice)
+        Self(Shared::new(bytes))
     }
 
     /// # Errors
     /// Past the end.
     pub fn int8(&mut self) -> Result<i8> {
-        Ok(i8::from_be_bytes([self.take(1)?[0]]))
+        Ok(i8::from_be_bytes(self.0.array()?))
     }
 
     /// # Errors
     /// Past the end.
     pub fn int16(&mut self) -> Result<i16> {
-        let b = self.take(2)?;
-        Ok(i16::from_be_bytes([b[0], b[1]]))
+        Ok(i16::from_be_bytes(self.0.array()?))
     }
 
     /// # Errors
     /// Past the end.
     pub fn int32(&mut self) -> Result<i32> {
-        let b = self.take(4)?;
-        Ok(i32::from_be_bytes([b[0], b[1], b[2], b[3]]))
+        Ok(i32::from_be_bytes(self.0.array()?))
     }
 
     /// # Errors
     /// Past the end.
     pub fn int64(&mut self) -> Result<i64> {
-        let b = self.take(8)?;
-        let mut array = [0u8; 8];
-        array.copy_from_slice(b);
-        Ok(i64::from_be_bytes(array))
+        Ok(i64::from_be_bytes(self.0.array()?))
     }
 
     /// # Errors
@@ -175,7 +174,7 @@ impl<'a> Reader<'a> {
 
     #[must_use]
     pub fn rest(&self) -> &'a [u8] {
-        &self.bytes[self.at.min(self.bytes.len())..]
+        self.remaining()
     }
 }
 
