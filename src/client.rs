@@ -10,7 +10,10 @@ use transport::error::{Result, TransportError, classify, protocol_error};
 use transport::socket;
 
 use crate::records::{Record, decode_batches, encode_batch};
-use crate::wire::{API_FETCH, API_METADATA, API_PRODUCE, Reader, Writer, read_message, request};
+use codec::cursor::Cursor;
+use codec::writer::ByteWriter;
+
+use crate::wire::{API_FETCH, API_METADATA, API_PRODUCE, Kafka, KafkaWrite, read_message, request};
 
 /// What a Metadata answered about one topic.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -48,35 +51,35 @@ impl Client {
     /// # Errors
     /// Where the broker went away, or answered an error for the topic.
     pub fn metadata(&mut self, topic: &str) -> Result<TopicMetadata> {
-        let mut body = Writer::new();
-        body.array(1).string(Some(topic));
-        let answer = self.call(API_METADATA, 1, &body.finish())?;
-        let mut reader = Reader::new(&answer);
+        let mut body = Vec::new();
+        body.count(1).nullable_string(Some(topic));
+        let answer = self.call(API_METADATA, 1, &body)?;
+        let mut reader = Cursor::new(&answer);
         let mut brokers = Vec::new();
-        for _ in 0..reader.array()? {
-            let node = reader.int32()?;
-            let host = reader.string()?.unwrap_or_default();
-            let port = reader.int32()?;
-            reader.string()?; // rack
+        for _ in 0..reader.count()? {
+            let node = reader.i32_be()?;
+            let host = reader.nullable_string()?.unwrap_or_default();
+            let port = reader.i32_be()?;
+            reader.nullable_string()?; // rack
             brokers.push((node, format!("{host}:{port}")));
         }
-        reader.int32()?; // controller
+        reader.i32_be()?; // controller
         let mut metadata = None;
-        for _ in 0..reader.array()? {
-            let error = reader.int16()?;
-            let name = reader.string()?.unwrap_or_default();
-            reader.int8()?; // internal
+        for _ in 0..reader.count()? {
+            let error = reader.i16_be()?;
+            let name = reader.nullable_string()?.unwrap_or_default();
+            reader.i8()?; // internal
             let mut partitions = Vec::new();
             let mut leader = String::new();
-            for _ in 0..reader.array()? {
-                reader.int16()?; // partition error
-                let partition = reader.int32()?;
-                let leader_node = reader.int32()?;
-                for _ in 0..reader.array()? {
-                    reader.int32()?; // replica
+            for _ in 0..reader.count()? {
+                reader.i16_be()?; // partition error
+                let partition = reader.i32_be()?;
+                let leader_node = reader.i32_be()?;
+                for _ in 0..reader.count()? {
+                    reader.i32_be()?; // replica
                 }
-                for _ in 0..reader.array()? {
-                    reader.int32()?; // isr
+                for _ in 0..reader.count()? {
+                    reader.i32_be()?; // isr
                 }
                 if partition == 0 {
                     leader = brokers
@@ -110,27 +113,27 @@ impl Client {
         value: &[u8],
     ) -> Result<i64> {
         let batch = encode_batch(0, &[(key, Some(value))]);
-        let mut body = Writer::new();
-        body.string(None)
-            .int16(1)
-            .int32(10_000)
-            .array(1)
-            .string(Some(topic))
-            .array(1)
-            .int32(partition)
-            .bytes(Some(&batch));
-        let answer = self.call(API_PRODUCE, 3, &body.finish())?;
-        let mut reader = Reader::new(&answer);
-        if reader.array()? == 0 {
+        let mut body = Vec::new();
+        body.nullable_string(None)
+            .i16_be(1)
+            .i32_be(10_000)
+            .count(1)
+            .nullable_string(Some(topic))
+            .count(1)
+            .i32_be(partition)
+            .nullable_bytes(Some(&batch));
+        let answer = self.call(API_PRODUCE, 3, &body)?;
+        let mut reader = Cursor::new(&answer);
+        if reader.count()? == 0 {
             return Err(protocol_error("a produce answered without a topic"));
         }
-        reader.string()?;
-        if reader.array()? == 0 {
+        reader.nullable_string()?;
+        if reader.count()? == 0 {
             return Err(protocol_error("a produce answered without a partition"));
         }
-        reader.int32()?;
-        let error = reader.int16()?;
-        let base_offset = reader.int64()?;
+        reader.i32_be()?;
+        let error = reader.i16_be()?;
+        let base_offset = reader.i64_be()?;
         if error != 0 {
             return Err(broker_error(error, "the produce"));
         }
@@ -142,37 +145,37 @@ impl Client {
     /// # Errors
     /// Where the broker went away or answered an error.
     pub fn fetch(&mut self, topic: &str, partition: i32, offset: i64) -> Result<Vec<Record>> {
-        let mut body = Writer::new();
-        body.int32(-1)
-            .int32(100)
-            .int32(1)
-            .int32(1 << 20)
-            .int8(0)
-            .array(1)
-            .string(Some(topic))
-            .array(1)
-            .int32(partition)
-            .int64(offset)
-            .int32(1 << 20);
-        let answer = self.call(API_FETCH, 4, &body.finish())?;
-        let mut reader = Reader::new(&answer);
-        reader.int32()?; // throttle
-        if reader.array()? == 0 {
+        let mut body = Vec::new();
+        body.i32_be(-1)
+            .i32_be(100)
+            .i32_be(1)
+            .i32_be(1 << 20)
+            .i8(0)
+            .count(1)
+            .nullable_string(Some(topic))
+            .count(1)
+            .i32_be(partition)
+            .i64_be(offset)
+            .i32_be(1 << 20);
+        let answer = self.call(API_FETCH, 4, &body)?;
+        let mut reader = Cursor::new(&answer);
+        reader.i32_be()?; // throttle
+        if reader.count()? == 0 {
             return Err(protocol_error("a fetch answered without a topic"));
         }
-        reader.string()?;
-        if reader.array()? == 0 {
+        reader.nullable_string()?;
+        if reader.count()? == 0 {
             return Err(protocol_error("a fetch answered without a partition"));
         }
-        reader.int32()?;
-        let error = reader.int16()?;
-        reader.int64()?; // high watermark
-        reader.int64()?; // last stable offset
-        for _ in 0..reader.array()? {
-            reader.int64()?;
-            reader.int64()?;
+        reader.i32_be()?;
+        let error = reader.i16_be()?;
+        reader.i64_be()?; // high watermark
+        reader.i64_be()?; // last stable offset
+        for _ in 0..reader.count()? {
+            reader.i64_be()?;
+            reader.i64_be()?;
         }
-        let set = reader.bytes()?.unwrap_or(&[]);
+        let set = reader.nullable_bytes()?.unwrap_or(&[]);
         if error != 0 {
             return Err(broker_error(error, "the fetch"));
         }
@@ -190,11 +193,11 @@ impl Client {
             .map_err(|e| classify("flushing a request", &e))?;
         let answer = read_message(&mut self.reader)?
             .ok_or_else(|| protocol_error("the broker closed before answering"))?;
-        let mut reader = Reader::new(&answer);
-        if reader.int32()? != self.correlation {
+        let mut reader = Cursor::new(&answer);
+        if reader.i32_be()? != self.correlation {
             return Err(protocol_error("an answer to another request"));
         }
-        Ok(reader.rest().to_vec())
+        Ok(reader.remaining().to_vec())
     }
 }
 

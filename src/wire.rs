@@ -1,11 +1,16 @@
-//! The Kafka protocol's primitive types and message framing: big-endian
-//! integers, length-prefixed strings, bytes and arrays, a request header
-//! and a response header, each message behind a four-byte size.
+//! The Kafka protocol's primitive types and message framing: a request
+//! header and a response header, each message behind a four-byte size.
+//!
+//! Integers are big-endian and read and written through codec's byte cursor
+//! and writer (`i16_be`, `i32_be`, ...). What is Kafka's own is here: the
+//! nullable string behind an `INT16` length, nullable bytes behind an
+//! `INT32` length, and an array's count, as [`Kafka`] on the cursor and
+//! [`KafkaWrite`] on the bytes being written.
 
 use std::io::Read;
 
-use std::ops::{Deref, DerefMut};
-use transport::cursor::Cursor as Shared;
+use codec::cursor::Cursor;
+use codec::writer::ByteWriter;
 use transport::error::{Result, classify, protocol_error};
 
 pub const API_PRODUCE: i16 = 0;
@@ -16,165 +21,82 @@ pub const API_VERSIONS: i16 = 18;
 /// The most one message may be.
 pub const MAX_MESSAGE: usize = 100 * 1024 * 1024;
 
-/// Writes the primitive types.
-#[derive(Default)]
-pub struct Writer {
-    out: Vec<u8>,
-}
-
-impl Writer {
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn int8(&mut self, value: i8) -> &mut Self {
-        self.out.extend_from_slice(&value.to_be_bytes());
-        self
-    }
-
-    pub fn int16(&mut self, value: i16) -> &mut Self {
-        self.out.extend_from_slice(&value.to_be_bytes());
-        self
-    }
-
-    pub fn int32(&mut self, value: i32) -> &mut Self {
-        self.out.extend_from_slice(&value.to_be_bytes());
-        self
-    }
-
-    pub fn int64(&mut self, value: i64) -> &mut Self {
-        self.out.extend_from_slice(&value.to_be_bytes());
-        self
-    }
-
-    /// A nullable string: `None` is length -1.
-    pub fn string(&mut self, value: Option<&str>) -> &mut Self {
-        match value {
-            Some(text) => {
-                self.int16(i16::try_from(text.len()).unwrap_or(i16::MAX));
-                self.out.extend_from_slice(text.as_bytes());
-            }
-            None => {
-                self.int16(-1);
-            }
-        }
-        self
-    }
-
-    /// Nullable bytes: `None` is length -1.
-    pub fn bytes(&mut self, value: Option<&[u8]>) -> &mut Self {
-        match value {
-            Some(bytes) => {
-                self.int32(i32::try_from(bytes.len()).unwrap_or(i32::MAX));
-                self.out.extend_from_slice(bytes);
-            }
-            None => {
-                self.int32(-1);
-            }
-        }
-        self
-    }
-
-    /// An array's count; the elements follow through the writer.
-    pub fn array(&mut self, count: usize) -> &mut Self {
-        self.int32(i32::try_from(count).unwrap_or(i32::MAX))
-    }
-
-    pub fn raw(&mut self, bytes: &[u8]) -> &mut Self {
-        self.out.extend_from_slice(bytes);
-        self
-    }
-
-    #[must_use]
-    pub fn finish(self) -> Vec<u8> {
-        self.out
-    }
-}
-
-/// Reads the primitive types: the transport's cursor, with Kafka's fields
-/// named on it.
-pub struct Reader<'a>(Shared<'a>);
-
-impl<'a> Deref for Reader<'a> {
-    type Target = Shared<'a>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl DerefMut for Reader<'_> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
-impl<'a> Reader<'a> {
-    /// A cursor at the start of `bytes`.
-    #[must_use]
-    pub const fn new(bytes: &'a [u8]) -> Self {
-        Self(Shared::new(bytes))
-    }
-
-    /// # Errors
-    /// Past the end.
-    pub fn int8(&mut self) -> Result<i8> {
-        Ok(i8::from_be_bytes(self.0.array()?))
-    }
-
-    /// # Errors
-    /// Past the end.
-    pub fn int16(&mut self) -> Result<i16> {
-        Ok(i16::from_be_bytes(self.0.array()?))
-    }
-
-    /// # Errors
-    /// Past the end.
-    pub fn int32(&mut self) -> Result<i32> {
-        Ok(i32::from_be_bytes(self.0.array()?))
-    }
-
-    /// # Errors
-    /// Past the end.
-    pub fn int64(&mut self) -> Result<i64> {
-        Ok(i64::from_be_bytes(self.0.array()?))
-    }
-
+/// Kafka's own fields, read off codec's cursor.
+pub trait Kafka<'a> {
+    /// A nullable string: length -1 is `None`.
+    ///
     /// # Errors
     /// Past the end, or not UTF-8.
-    pub fn string(&mut self) -> Result<Option<String>> {
-        let length = self.int16()?;
-        if length < 0 {
-            return Ok(None);
-        }
-        let bytes = self.take(usize::try_from(length).unwrap_or(0))?;
-        String::from_utf8(bytes.to_vec())
-            .map(Some)
-            .map_err(|_| protocol_error("a string that is not UTF-8"))
-    }
+    fn nullable_string(&mut self) -> Result<Option<String>>;
 
+    /// Nullable bytes: length -1 is `None`.
+    ///
     /// # Errors
     /// Past the end.
-    pub fn bytes(&mut self) -> Result<Option<&'a [u8]>> {
-        let length = self.int32()?;
-        if length < 0 {
-            return Ok(None);
-        }
-        self.take(usize::try_from(length).unwrap_or(0)).map(Some)
-    }
+    fn nullable_bytes(&mut self) -> Result<Option<&'a [u8]>>;
 
     /// An array's count, a null array being zero.
     ///
     /// # Errors
     /// Past the end.
-    pub fn array(&mut self) -> Result<usize> {
-        Ok(usize::try_from(self.int32()?).unwrap_or(0))
+    fn count(&mut self) -> Result<usize>;
+}
+
+impl<'a> Kafka<'a> for Cursor<'a> {
+    fn nullable_string(&mut self) -> Result<Option<String>> {
+        let Ok(length) = usize::try_from(self.i16_be()?) else {
+            return Ok(None);
+        };
+        String::from_utf8(self.take(length)?.to_vec())
+            .map(Some)
+            .map_err(|_| protocol_error("a string that is not UTF-8"))
     }
 
-    #[must_use]
-    pub fn rest(&self) -> &'a [u8] {
-        self.remaining()
+    fn nullable_bytes(&mut self) -> Result<Option<&'a [u8]>> {
+        let Ok(length) = usize::try_from(self.i32_be()?) else {
+            return Ok(None);
+        };
+        Ok(Some(self.take(length)?))
+    }
+
+    fn count(&mut self) -> Result<usize> {
+        Ok(usize::try_from(self.i32_be()?).unwrap_or(0))
+    }
+}
+
+/// Kafka's own fields, written beside codec's writer.
+pub trait KafkaWrite {
+    /// A nullable string: `None` is length -1.
+    fn nullable_string(&mut self, value: Option<&str>) -> &mut Self;
+
+    /// Nullable bytes: `None` is length -1.
+    fn nullable_bytes(&mut self, value: Option<&[u8]>) -> &mut Self;
+
+    /// An array's count; the elements follow.
+    fn count(&mut self, count: usize) -> &mut Self;
+}
+
+impl KafkaWrite for Vec<u8> {
+    fn nullable_string(&mut self, value: Option<&str>) -> &mut Self {
+        match value {
+            Some(text) => self
+                .i16_be(i16::try_from(text.len()).unwrap_or(i16::MAX))
+                .bytes(text.as_bytes()),
+            None => self.i16_be(-1),
+        }
+    }
+
+    fn nullable_bytes(&mut self, value: Option<&[u8]>) -> &mut Self {
+        match value {
+            Some(bytes) => self
+                .i32_be(i32::try_from(bytes.len()).unwrap_or(i32::MAX))
+                .bytes(bytes),
+            None => self.i32_be(-1),
+        }
+    }
+
+    fn count(&mut self, count: usize) -> &mut Self {
+        self.i32_be(i32::try_from(count).unwrap_or(i32::MAX))
     }
 }
 
@@ -187,32 +109,28 @@ pub fn request(
     client: &str,
     body: &[u8],
 ) -> Vec<u8> {
-    let mut header = Writer::new();
+    let mut header = Vec::new();
     header
-        .int16(api_key)
-        .int16(api_version)
-        .int32(correlation)
-        .string(Some(client))
-        .raw(body);
-    frame(&header.finish())
+        .i16_be(api_key)
+        .i16_be(api_version)
+        .i32_be(correlation)
+        .nullable_string(Some(client))
+        .bytes(body);
+    frame(&header)
 }
 
 /// A response: the size, the correlation id, and `body`.
 #[must_use]
 pub fn response(correlation: i32, body: &[u8]) -> Vec<u8> {
-    let mut out = Writer::new();
-    out.int32(correlation).raw(body);
-    frame(&out.finish())
+    let mut out = Vec::new();
+    out.i32_be(correlation).bytes(body);
+    frame(&out)
 }
 
 fn frame(message: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(message.len() + 4);
-    out.extend_from_slice(
-        &i32::try_from(message.len())
-            .unwrap_or(i32::MAX)
-            .to_be_bytes(),
-    );
-    out.extend_from_slice(message);
+    out.i32_be(i32::try_from(message.len()).unwrap_or(i32::MAX))
+        .bytes(message);
     out
 }
 
@@ -259,14 +177,14 @@ pub struct RequestHeader {
 /// # Errors
 /// A message shorter than a header.
 pub fn read_request(message: &[u8]) -> Result<(RequestHeader, &[u8])> {
-    let mut reader = Reader::new(message);
+    let mut cursor = Cursor::new(message);
     let header = RequestHeader {
-        api_key: reader.int16()?,
-        api_version: reader.int16()?,
-        correlation: reader.int32()?,
-        client: reader.string()?,
+        api_key: cursor.i16_be()?,
+        api_version: cursor.i16_be()?,
+        correlation: cursor.i32_be()?,
+        client: cursor.nullable_string()?,
     };
-    Ok((header, reader.rest()))
+    Ok((header, cursor.remaining()))
 }
 
 #[cfg(test)]
@@ -275,17 +193,17 @@ mod tests {
 
     #[test]
     fn primitives_and_framing_round_trip() {
-        let mut body = Writer::new();
-        body.int8(-1)
-            .int16(300)
-            .int32(-70_000)
-            .int64(1 << 40)
-            .string(Some("orders"))
-            .string(None)
-            .bytes(Some(b"bin"))
-            .bytes(None)
-            .array(2);
-        let request = request(API_PRODUCE, 3, 7, "xmip", &body.finish());
+        let mut body = Vec::new();
+        body.i8(-1)
+            .i16_be(300)
+            .i32_be(-70_000)
+            .i64_be(1 << 40)
+            .nullable_string(Some("orders"))
+            .nullable_string(None)
+            .nullable_bytes(Some(b"bin"))
+            .nullable_bytes(None)
+            .count(2);
+        let request = request(API_PRODUCE, 3, 7, "xmip", &body);
         let message = read_message(&mut request.as_slice())
             .expect("read")
             .expect("one");
@@ -299,23 +217,28 @@ mod tests {
                 client: Some("xmip".into())
             }
         );
-        let mut reader = Reader::new(rest);
-        assert_eq!(reader.int8().expect("i8"), -1);
-        assert_eq!(reader.int16().expect("i16"), 300);
-        assert_eq!(reader.int32().expect("i32"), -70_000);
-        assert_eq!(reader.int64().expect("i64"), 1 << 40);
-        assert_eq!(reader.string().expect("s").as_deref(), Some("orders"));
-        assert_eq!(reader.string().expect("null"), None);
-        assert_eq!(reader.bytes().expect("b"), Some(&b"bin"[..]));
-        assert_eq!(reader.bytes().expect("null"), None);
-        assert_eq!(reader.array().expect("array"), 2);
-        assert!(reader.rest().is_empty());
-        assert!(reader.int8().is_err());
+        let mut cursor = Cursor::new(rest);
+        assert_eq!(cursor.i8().expect("i8"), -1);
+        assert_eq!(cursor.i16_be().expect("i16"), 300);
+        assert_eq!(cursor.i32_be().expect("i32"), -70_000);
+        assert_eq!(cursor.i64_be().expect("i64"), 1 << 40);
+        assert_eq!(
+            cursor.nullable_string().expect("s").as_deref(),
+            Some("orders")
+        );
+        assert_eq!(cursor.nullable_string().expect("null"), None);
+        assert_eq!(cursor.nullable_bytes().expect("b"), Some(&b"bin"[..]));
+        assert_eq!(cursor.nullable_bytes().expect("null"), None);
+        assert_eq!(cursor.count().expect("array"), 2);
+        assert!(cursor.is_empty());
+        let error = cursor.count().expect_err("past the end");
+        assert!(error.message.contains("runs past"), "{}", error.message);
+        assert!(!error.retryable);
         let response = response(7, &[1, 2]);
         let message = read_message(&mut response.as_slice())
             .expect("read")
             .expect("one");
-        assert_eq!(Reader::new(&message).int32().expect("correlation"), 7);
+        assert_eq!(Cursor::new(&message).i32_be().expect("correlation"), 7);
         assert!(read_message(&mut &[][..]).expect("closed").is_none());
         assert!(read_message(&mut &[0, 0, 0, 5, 1][..]).is_err(), "short");
         assert!(read_message(&mut &[0x7f, 0, 0, 0][..]).is_err(), "too big");
