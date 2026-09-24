@@ -11,14 +11,16 @@ use std::io::{BufReader, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::time::Duration;
 
+use codec::cursor::Cursor;
+use codec::writer::ByteWriter;
 use transport::Arrived;
 use transport::error::{Result, classify, protocol_error};
 use transport::socket;
 
 use crate::records::{Entry, Record, decode_batches, encode_batch};
 use crate::wire::{
-    API_FETCH, API_METADATA, API_PRODUCE, API_VERSIONS, Reader, Writer, read_message, read_request,
-    response,
+    API_FETCH, API_METADATA, API_PRODUCE, API_VERSIONS, Kafka, KafkaWrite, read_message,
+    read_request, response,
 };
 
 /// What the client did, as [`Session::next_event`] reports it.
@@ -107,15 +109,15 @@ impl Session {
                 return Ok(None);
             };
             let (header, body) = read_request(&message)?;
-            let mut reader = Reader::new(body);
-            let mut answer = Writer::new();
+            let mut reader = Cursor::new(body);
+            let mut answer = Vec::new();
             let event = match header.api_key {
                 API_VERSIONS => {
-                    answer.int16(0).array(3);
+                    answer.i16_be(0).count(3);
                     for (key, min, max) in
                         [(API_PRODUCE, 3, 3), (API_FETCH, 4, 4), (API_METADATA, 1, 1)]
                     {
-                        answer.int16(key).int16(min).int16(max);
+                        answer.i16_be(key).i16_be(min).i16_be(max);
                     }
                     None
                 }
@@ -131,7 +133,7 @@ impl Session {
                     )));
                 }
             };
-            let bytes = response(header.correlation, &answer.finish());
+            let bytes = response(header.correlation, &answer);
             self.writer
                 .write_all(&bytes)
                 .map_err(|e| classify("writing a response", &e))?;
@@ -146,29 +148,29 @@ impl Session {
 
     /// Metadata v1: this session is broker 0 and leads partition 0 of every
     /// topic asked for.
-    fn answer_metadata(&self, reader: &mut Reader<'_>, answer: &mut Writer) -> Result<()> {
-        let count = reader.array()?;
+    fn answer_metadata(&self, reader: &mut Cursor<'_>, answer: &mut Vec<u8>) -> Result<()> {
+        let count = reader.count()?;
         let mut topics = Vec::with_capacity(count);
         for _ in 0..count {
-            topics.push(reader.string()?.unwrap_or_default());
+            topics.push(reader.nullable_string()?.unwrap_or_default());
         }
         let (host, port) = self.local.rsplit_once(':').unwrap_or((&self.local, "0"));
-        answer.array(1).int32(0).string(Some(host));
+        answer.count(1).i32_be(0).nullable_string(Some(host));
         answer
-            .int32(port.parse().unwrap_or(0))
-            .string(None)
-            .int32(0);
-        answer.array(topics.len());
+            .i32_be(port.parse().unwrap_or(0))
+            .nullable_string(None)
+            .i32_be(0);
+        answer.count(topics.len());
         for topic in &topics {
-            answer.int16(0).string(Some(topic)).int8(0).array(1);
+            answer.i16_be(0).nullable_string(Some(topic)).i8(0).count(1);
             answer
-                .int16(0)
-                .int32(0)
-                .int32(0)
-                .array(1)
-                .int32(0)
-                .array(1)
-                .int32(0);
+                .i16_be(0)
+                .i32_be(0)
+                .i32_be(0)
+                .count(1)
+                .i32_be(0)
+                .count(1)
+                .i32_be(0);
         }
         Ok(())
     }
@@ -176,47 +178,47 @@ impl Session {
     /// Produce v3: append every batch, answer the base offset of each.
     fn answer_produce(
         &mut self,
-        reader: &mut Reader<'_>,
-        answer: &mut Writer,
+        reader: &mut Cursor<'_>,
+        answer: &mut Vec<u8>,
     ) -> Result<Option<Event>> {
-        reader.string()?;
-        reader.int16()?;
-        reader.int32()?;
-        let topics = reader.array()?;
-        answer.array(topics);
+        reader.nullable_string()?;
+        reader.i16_be()?;
+        reader.i32_be()?;
+        let topics = reader.count()?;
+        answer.count(topics);
         let mut first = None;
         for _ in 0..topics {
-            let topic = reader.string()?.unwrap_or_default();
-            let partitions = reader.array()?;
-            answer.string(Some(&topic)).array(partitions);
+            let topic = reader.nullable_string()?.unwrap_or_default();
+            let partitions = reader.count()?;
+            answer.nullable_string(Some(&topic)).count(partitions);
             for _ in 0..partitions {
-                let partition = reader.int32()?;
-                let set = reader.bytes()?.unwrap_or(&[]);
+                let partition = reader.i32_be()?;
+                let set = reader.nullable_bytes()?.unwrap_or(&[]);
                 let base = self.append(&topic, partition, set, &mut first)?;
-                answer.int32(partition).int16(0).int64(base).int64(-1);
+                answer.i32_be(partition).i16_be(0).i64_be(base).i64_be(-1);
             }
         }
-        answer.int32(0);
+        answer.i32_be(0);
         Ok(first.map(Event::Produced))
     }
 
     /// Fetch v4: the records from the offset on, in one batch.
-    fn answer_fetch(&self, reader: &mut Reader<'_>, answer: &mut Writer) -> Result<Option<Event>> {
+    fn answer_fetch(&self, reader: &mut Cursor<'_>, answer: &mut Vec<u8>) -> Result<Option<Event>> {
         for _ in 0..4 {
-            reader.int32()?;
+            reader.i32_be()?;
         }
-        reader.int8()?;
-        let topics = reader.array()?;
-        answer.int32(0).array(topics);
+        reader.i8()?;
+        let topics = reader.count()?;
+        answer.i32_be(0).count(topics);
         let mut fetched = None;
         for _ in 0..topics {
-            let topic = reader.string()?.unwrap_or_default();
-            let partitions = reader.array()?;
-            answer.string(Some(&topic)).array(partitions);
+            let topic = reader.nullable_string()?.unwrap_or_default();
+            let partitions = reader.count()?;
+            answer.nullable_string(Some(&topic)).count(partitions);
             for _ in 0..partitions {
-                let partition = reader.int32()?;
-                let offset = reader.int64()?;
-                reader.int32()?;
+                let partition = reader.i32_be()?;
+                let offset = reader.i64_be()?;
+                reader.i32_be()?;
                 let log = self.logs.get(&(topic.clone(), partition));
                 let high = log.map_or(0, |l| i64::try_from(l.len()).unwrap_or(0));
                 let set = log.map_or_else(Vec::new, |l| {
@@ -231,8 +233,8 @@ impl Session {
                         encode_batch(offset, &records)
                     }
                 });
-                answer.int32(partition).int16(0).int64(high).int64(high);
-                answer.array(0).bytes(Some(&set));
+                answer.i32_be(partition).i16_be(0).i64_be(high).i64_be(high);
+                answer.count(0).nullable_bytes(Some(&set));
                 fetched = Some(Event::Fetched {
                     topic: topic.clone(),
                     offset,
