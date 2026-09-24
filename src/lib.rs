@@ -30,7 +30,8 @@ use std::time::Duration;
 pub use client::{Client, TopicMetadata};
 pub use records::Record;
 pub use session::{Event, Session};
-use transport::error::{Result, protocol_error};
+use transport::arrived::next_arrival;
+use transport::error::Result;
 use transport::listening::{Accepting, Listening};
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
 use transport::socket;
@@ -183,27 +184,26 @@ impl KafkaTransport {
     }
 }
 
-/// What the far end does with its one producer and its one record. It holds
-/// the timeout rather than the transport: the transport carries a cursor
-/// under a lock, and a far end has no offset to keep.
-struct Producing(Option<Duration>);
-
-impl Accepting for Producing {
-    fn take_one(&self, listener: &TcpListener) -> Result<Arrived> {
-        let mut session = Session::accept(listener, self.0)?;
-        session
-            .next_produce()?
-            .ok_or_else(|| protocol_error("the client closed without producing"))
+/// What a far end does with its one producer and its one record, waiting
+/// `timeout` on each: the leader's side of a loopback round, and of every
+/// technology that speaks Kafka on the wire (redpanda). It holds the timeout
+/// rather than the transport: the transport carries a cursor under a lock,
+/// and a far end has no offset to keep.
+#[must_use]
+pub fn producing(timeout: Option<Duration>) -> impl Accepting {
+    move |listener: &TcpListener| {
+        next_arrival(
+            Session::accept(listener, timeout)?.next_produce()?,
+            "the client closed without producing",
+        )
     }
 }
 
 impl Loopback for KafkaTransport {
     fn far_end(&self) -> Result<Box<dyn FarEnd>> {
-        let (listener, address) = self.bind()?;
         Ok(Box::new(Listening::new(
-            Producing(self.timeout),
-            listener,
-            address,
+            producing(self.timeout),
+            self.bind()?,
         )))
     }
 
