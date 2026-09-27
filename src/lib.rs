@@ -42,7 +42,7 @@ use transport::error::Result;
 use transport::listening::{Accepting, Listening};
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
 use transport::socket;
-use transport::{Arrived, Directions, Transport};
+use transport::{Arrived, Directions, Pool, Transport};
 use xcore::settings::{Applies, Kind, Presence, Read, Setting, Settings};
 
 pub struct KafkaTransport {
@@ -52,6 +52,9 @@ pub struct KafkaTransport {
     client: String,
     cursor: Mutex<i64>,
     timeout: Option<Duration>,
+    /// The connections a send produces on, connected once per broker and
+    /// kept.
+    producers: Pool<Client>,
 }
 
 impl KafkaTransport {
@@ -66,6 +69,7 @@ impl KafkaTransport {
             client: "xmip".to_string(),
             cursor: Mutex::new(0),
             timeout: None,
+            producers: Pool::new(),
         }
     }
 
@@ -233,12 +237,19 @@ impl Transport for KafkaTransport {
         Ok(arrived)
     }
 
+    /// Produce on the connection kept for the broker, connected on the
+    /// first send to it, acknowledged by the leader.
     fn send(&self, target: &str, bytes: &[u8]) -> Result<()> {
         let (broker, topic) = self.resolve(target);
-        let mut client = Client::connect(broker, &self.client, self.timeout)?;
-        client
-            .produce(topic, self.partition, None, bytes)
-            .map(|_| ())
+        self.producers.exchange(
+            broker,
+            || Client::connect(broker, &self.client, self.timeout),
+            |client| {
+                client
+                    .produce(topic, self.partition, None, bytes)
+                    .map(|_| ())
+            },
+        )
     }
 }
 
@@ -274,8 +285,8 @@ impl Loopback for KafkaTransport {
         )))
     }
 
-    /// A fresh producer to `address`, one record on this transport's topic,
-    /// acknowledged by the leader before it returns.
+    /// A producer of its own to `address`, one record on this transport's
+    /// topic, acknowledged by the leader before it returns.
     fn send_to(&self, address: &str, payload: &[u8]) -> Result<()> {
         let mut near = Self::new(address, &self.topic).on_partition(self.partition);
         near.timeout = self.timeout;
@@ -362,7 +373,8 @@ mod tests {
             session.next_produce().expect("produce").expect("one").bytes,
             b"produced"
         );
-        assert!(session.next_produce().expect("closed").is_none());
+        // The producer keeps its connection; the receive opens its own.
+        drop(session);
         let mut session = far_end
             .accept_one(&listener)
             .expect("second")
@@ -374,6 +386,38 @@ mod tests {
         assert!(arrived[1].origin_uri.ends_with("/orders/0?offset=2"));
         assert_eq!(cursor, 3);
         assert!(far_end.claims().is_none());
+    }
+
+    #[test]
+    fn a_thousand_sends_connect_once_and_a_connection_the_broker_closed_is_replaced() {
+        const SENDS: usize = 1000;
+        let far_end = KafkaTransport::new("127.0.0.1:0", "orders").timing_out_after(secs(5));
+        let (listener, address) = far_end.bind().expect("binding");
+        let near =
+            std::sync::Arc::new(KafkaTransport::new(address, "orders").timing_out_after(secs(5)));
+        let sending = std::sync::Arc::clone(&near);
+        let sender = std::thread::spawn(move || {
+            let began = std::time::Instant::now();
+            for n in 0..SENDS {
+                sending.send("orders", n.to_string().as_bytes())?;
+            }
+            let took = began.elapsed();
+            // Generous for a debug build under load: a millisecond a send.
+            assert!(took < Duration::from_millis(SENDS as u64), "{took:?}");
+            sending.send("orders", b"after the close")
+        });
+        // One connection for every produce: one session accepted.
+        let mut session = far_end.accept_one(&listener).expect("accepting");
+        for n in 0..SENDS {
+            let produced = session.next_produce().expect("produce").expect("one");
+            assert_eq!(produced.bytes, n.to_string().as_bytes());
+        }
+        drop(session);
+        let mut again = far_end.accept_one(&listener).expect("a new connection");
+        let last = again.next_produce().expect("produce").expect("one");
+        assert_eq!(last.bytes, b"after the close");
+        sender.join().expect("thread").expect("sending");
+        assert_eq!(near.producers.opened(), 2);
     }
 
     #[test]
