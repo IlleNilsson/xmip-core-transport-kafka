@@ -9,7 +9,7 @@ use std::time::Duration;
 use transport::error::{Result, TransportError, classify, protocol_error};
 use transport::socket;
 
-use crate::records::{Record, decode_batches, encode_batch};
+use crate::records::{Entry, Record, decode_batches, encode_batch};
 use codec::cursor::Cursor;
 use codec::writer::ByteWriter;
 
@@ -112,7 +112,17 @@ impl Client {
         key: Option<&[u8]>,
         value: &[u8],
     ) -> Result<i64> {
-        let batch = encode_batch(0, &[(key, Some(value))]);
+        self.produce_entry(topic, partition, Entry::new(key, Some(value)))
+    }
+
+    /// Produce v3: one record — its key, value and headers — to
+    /// `partition` of `topic`, acknowledged by the leader; the offset it
+    /// was written at.
+    ///
+    /// # Errors
+    /// Where the broker went away or answered an error.
+    pub fn produce_entry(&mut self, topic: &str, partition: i32, entry: Entry<'_>) -> Result<i64> {
+        let batch = encode_batch(0, &[entry]);
         let mut body = Vec::new();
         body.nullable_string(None)
             .i16_be(1)
