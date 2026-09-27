@@ -20,18 +20,17 @@
 //! nor TLS yet (they are its next layers), and when it does, the
 //! credential joins the [`Topic`] a Party is configured with.
 //!
-//! One connection per Party is kept open between events, so an event
-//! costs one produce and not a connect; a failed attempt drops it and the
-//! next attempt connects afresh.
+//! The connections to each Party are the capability's [`Pool`], kept open
+//! between events, so an event costs one produce and not a connect; one
+//! that fails is dropped, and the event goes again on a new one.
 
 use std::collections::BTreeMap;
-use std::collections::btree_map::Entry as Slot;
-use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
 use event::binding::Carried;
 use event::forward::Wire;
-use resilience::Failure;
+use transport::Pool;
+use xcore::Failure;
 use xcore::PartyId;
 
 use crate::client::Client;
@@ -79,21 +78,21 @@ impl Topic {
     }
 }
 
-/// The Kafka wire: each Party's topic, and a connection kept to each.
+/// The Kafka wire: each Party's topic, and the connections kept to each.
 pub struct EventWire {
     topics: BTreeMap<PartyId, Topic>,
     timeout: Option<Duration>,
-    connections: Mutex<BTreeMap<PartyId, Client>>,
+    connections: Pool<Client, PartyId>,
 }
 
 impl EventWire {
     /// A wire configured for no Party yet.
     #[must_use]
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             topics: BTreeMap::new(),
             timeout: None,
-            connections: Mutex::new(BTreeMap::new()),
+            connections: Pool::new(),
         }
     }
 
@@ -125,24 +124,18 @@ impl Wire for EventWire {
             Failure::permanent(format!("no Kafka topic is configured for Party {party}"))
         })?;
         let headers = headers(carried);
-        let entry = Entry::new(None, Some(&carried.body)).with_headers(&headers);
-        let mut connections = self
-            .connections
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        let client = match connections.entry(party) {
-            Slot::Occupied(open) => open.into_mut(),
-            Slot::Vacant(slot) => {
-                slot.insert(Client::connect(&topic.broker, &topic.client, self.timeout)?)
-            }
-        };
-        match client.produce_entry(&topic.topic, topic.partition, entry) {
-            Ok(_) => Ok(()),
-            Err(error) => {
-                connections.remove(&party);
-                Err(error.into())
-            }
-        }
+        self.connections
+            .exchange(
+                &party,
+                || Client::connect(&topic.broker, &topic.client, self.timeout),
+                |client| {
+                    let entry = Entry::new(None, Some(&carried.body)).with_headers(&headers);
+                    client
+                        .produce_entry(&topic.topic, topic.partition, entry)
+                        .map(|_| ())
+                },
+            )
+            .map_err(Failure::from)
     }
 }
 
@@ -222,12 +215,12 @@ mod tests {
         let refused = wire
             .carry(PartyId::new(2), &Carried::default())
             .expect_err("no topic");
-        assert!(!refused.is_retryable());
-        assert!(refused.reason.contains("no Kafka topic"), "{refused}");
+        assert!(!refused.retryable);
+        assert!(refused.message.contains("no Kafka topic"), "{refused}");
         let unreachable = wire
             .timing_out_after(Duration::from_secs(1))
             .carry(PartyId::new(1), &Carried::default())
             .expect_err("nothing listens");
-        assert!(unreachable.is_retryable(), "{unreachable}");
+        assert!(unreachable.retryable, "{unreachable}");
     }
 }

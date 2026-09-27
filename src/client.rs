@@ -7,6 +7,7 @@ use std::net::TcpStream;
 use std::time::Duration;
 
 use transport::error::{Result, TransportError, classify, protocol_error};
+use transport::pool::{Pooled, alive};
 use transport::socket;
 
 use crate::records::{Entry, Record, decode_batches, encode_batch};
@@ -23,6 +24,8 @@ pub struct TopicMetadata {
     pub leader: String,
 }
 
+/// One connection to a broker, kept between requests while the broker
+/// keeps it open.
 pub struct Client {
     reader: BufReader<TcpStream>,
     writer: TcpStream,
@@ -208,6 +211,13 @@ impl Client {
             return Err(protocol_error("an answer to another request"));
         }
         Ok(reader.remaining().to_vec())
+    }
+}
+
+impl Pooled for Client {
+    /// While the broker has not closed the connection.
+    fn usable(&mut self) -> bool {
+        alive(&self.writer)
     }
 }
 
