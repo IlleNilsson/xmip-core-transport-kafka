@@ -19,11 +19,26 @@ path = "src/lib.rs"
 transport = { package = "xmip-core-transport", git = "https://github.com/IlleNilsson/xmip-core-transport", branch = "main" }
 # The estate's encoding primitives: the byte cursor and writer, the varint and zig-zag, and CRC-32C.
 codec = { package = "xmip-core-library-codec", git = "https://github.com/IlleNilsson/xmip-core-library-codec", branch = "main" }
+# The event capability's wire (ADR-0065 clause 3): the Wire this crate
+# implements and the Carried it puts on a record — the wire event's Kafka
+# binding is written there, once. Every node links it already, through
+# the runtime; a Technology may depend on Foundation (repository-model.md
+# section 4).
+event = { package = "xmip-core-event", git = "https://github.com/IlleNilsson/xmip-core-event", branch = "main" }
+# The failure a Wire's attempt answers with, which the guards judge.
+resilience = { package = "xmip-core-resilience", git = "https://github.com/IlleNilsson/xmip-core-resilience", branch = "main" }
+# The Party a Wire carries to, by identifier.
+xcore = { package = "xmip-core", git = "https://github.com/IlleNilsson/xmip-core", branch = "main" }
 
 [dev-dependencies]
-# The loopback payloads the tests drive, from the capability's test
-# support and never a production build (ADR-0044).
+# The loopback payloads and the latency spread the tests drive, from the
+# capability's test support and never a production build (ADR-0044).
 transport = { package = "xmip-core-transport", git = "https://github.com/IlleNilsson/xmip-core-transport", branch = "main", features = ["test-support"] }
+# The forwarding tests: a subscriber's audit, the stage an Event reports,
+# and one real retry guard.
+audit = { package = "xmip-core-audit", git = "https://github.com/IlleNilsson/xmip-core-audit", branch = "main" }
+node = { package = "xmip-core-node", git = "https://github.com/IlleNilsson/xmip-core-node", branch = "main" }
+retry = { package = "xmip-core-resilience-retry", git = "https://github.com/IlleNilsson/xmip-core-resilience-retry", branch = "main" }
 
 [lints.rust]
 unsafe_code = "forbid"
@@ -35,3 +50,7 @@ missing_errors_doc = "warn"
 missing_panics_doc = "warn"
 unwrap_used = "warn"
 expect_used = "allow"
+
+# What this depends on runs optimized in a debug build (rust-style.md 5b).
+[profile.dev.package."*"]
+opt-level = 3

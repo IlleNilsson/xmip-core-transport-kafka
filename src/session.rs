@@ -39,6 +39,7 @@ pub struct Session {
     local: String,
     logs: BTreeMap<(String, i32), Vec<Record>>,
     pending: Vec<Arrived>,
+    refusing: Option<(i16, u32)>,
 }
 
 impl Session {
@@ -60,7 +61,25 @@ impl Session {
             local,
             logs: BTreeMap::new(),
             pending: Vec::new(),
+            refusing: None,
         })
+    }
+
+    /// Answer the next `times` produces with broker error `code`, keeping
+    /// nothing: how a far end shows a producer a leader that moved (6) or a
+    /// request that timed out (7), and the producer's retry.
+    #[must_use]
+    pub const fn refusing(mut self, code: i16, times: u32) -> Self {
+        self.refusing = Some((code, times));
+        self
+    }
+
+    /// What `topic`'s `partition` holds, in offset order, headers and all.
+    #[must_use]
+    pub fn log(&self, topic: &str, partition: i32) -> &[Record] {
+        self.logs
+            .get(&(topic.to_string(), partition))
+            .map_or(&[], Vec::as_slice)
     }
 
     /// Hold `values` in `topic`'s partition 0 for a consumer to fetch.
@@ -73,6 +92,7 @@ impl Session {
                 offset,
                 key: None,
                 value: Some(value.to_vec()),
+                headers: Vec::new(),
             });
         }
         self
@@ -175,7 +195,8 @@ impl Session {
         Ok(())
     }
 
-    /// Produce v3: append every batch, answer the base offset of each.
+    /// Produce v3: append every batch, answer the base offset of each — or,
+    /// while [`Session::refusing`], the error it names and nothing kept.
     fn answer_produce(
         &mut self,
         reader: &mut Cursor<'_>,
@@ -187,6 +208,13 @@ impl Session {
         let topics = reader.count()?;
         answer.count(topics);
         let mut first = None;
+        let refused = match self.refusing {
+            Some((code, times)) if times > 0 => {
+                self.refusing = Some((code, times - 1));
+                Some(code)
+            }
+            _ => None,
+        };
         for _ in 0..topics {
             let topic = reader.nullable_string()?.unwrap_or_default();
             let partitions = reader.count()?;
@@ -194,6 +222,10 @@ impl Session {
             for _ in 0..partitions {
                 let partition = reader.i32_be()?;
                 let set = reader.nullable_bytes()?.unwrap_or(&[]);
+                if let Some(code) = refused {
+                    answer.i32_be(partition).i16_be(code).i64_be(-1).i64_be(-1);
+                    continue;
+                }
                 let base = self.append(&topic, partition, set, &mut first)?;
                 answer.i32_be(partition).i16_be(0).i64_be(base).i64_be(-1);
             }
@@ -223,10 +255,7 @@ impl Session {
                 let high = log.map_or(0, |l| i64::try_from(l.len()).unwrap_or(0));
                 let set = log.map_or_else(Vec::new, |l| {
                     let from = usize::try_from(offset).unwrap_or(0).min(l.len());
-                    let records: Vec<Entry<'_>> = l[from..]
-                        .iter()
-                        .map(|r| (r.key.as_deref(), r.value.as_deref()))
-                        .collect();
+                    let records: Vec<Entry<'_>> = l[from..].iter().map(Entry::from).collect();
                     if records.is_empty() {
                         Vec::new()
                     } else {

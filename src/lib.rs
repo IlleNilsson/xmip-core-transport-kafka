@@ -17,8 +17,14 @@
 //! SASL, TLS, compression and idempotent producers are the next layers.
 //!
 //! The origin URI carries what the fetch knew: `kafka://broker/orders/0?offset=41`.
+//!
+//! The event capability rides this transport (ADR-0065 clause 3):
+//! [`event_wire`] produces a `WireEvent` as one record — the body
+//! its value, the attributes and the content type its headers, as the
+//! wire event's Kafka binding says — and reads one back off a record.
 
 pub mod client;
+pub mod event_wire;
 pub mod records;
 pub mod session;
 pub mod wire;
@@ -30,12 +36,14 @@ use std::time::Duration;
 pub use client::{Client, TopicMetadata};
 pub use records::Record;
 pub use session::{Event, Session};
+use transport::Configured;
 use transport::arrived::next_arrival;
 use transport::error::Result;
 use transport::listening::{Accepting, Listening};
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
 use transport::socket;
 use transport::{Arrived, Directions, Transport};
+use xcore::settings::{Applies, Kind, Presence, Read, Setting, Settings};
 
 pub struct KafkaTransport {
     bootstrap: String,
@@ -136,6 +144,65 @@ impl KafkaTransport {
     }
 }
 
+impl Configured for KafkaTransport {
+    /// The address is the bootstrap broker, `host:9092`, both sides ask
+    /// first.
+    const SETTINGS: &'static Settings = &Settings {
+        technology: env!("CARGO_PKG_NAME"),
+        settings: &[
+            Setting {
+                name: "topic",
+                kind: Kind::Text,
+                presence: Presence::Required,
+                meaning: "The topic a Receive Location fetches, or a Send Location produces to.",
+                applies: Applies::Both,
+            },
+            Setting {
+                name: "partition",
+                kind: Kind::Integer {
+                    minimum: 0,
+                    maximum: i32::MAX as i64,
+                },
+                presence: Presence::Optional,
+                meaning: "The partition fetched from and produced to; partition 0 when left out.",
+                applies: Applies::Both,
+            },
+            Setting {
+                name: "offset",
+                kind: Kind::Integer {
+                    minimum: 0,
+                    maximum: i64::MAX,
+                },
+                presence: Presence::Optional,
+                meaning: "The offset the first receive reads from; the beginning when left out.",
+                applies: Applies::Receive,
+            },
+            Setting {
+                name: "timeout",
+                kind: Kind::Duration,
+                presence: Presence::Optional,
+                meaning: "How long a broker that stops mid-message is waited on.",
+                applies: Applies::Both,
+            },
+        ],
+    };
+
+    fn configured(address: &str, settings: &Read) -> Result<Self> {
+        let mut transport = Self::new(address, settings.text("topic"));
+        if let Some(partition) = settings.optional_integer("partition") {
+            // The declaration holds it within 31 bits.
+            transport = transport.on_partition(i32::try_from(partition).unwrap_or(0));
+        }
+        if let Some(offset) = settings.optional_integer("offset") {
+            transport = transport.from_offset(offset);
+        }
+        Ok(match settings.optional_duration("timeout") {
+            Some(timeout) => transport.timing_out_after(timeout),
+            None => transport,
+        })
+    }
+}
+
 impl Transport for KafkaTransport {
     fn name(&self) -> &'static str {
         "kafka"
@@ -223,6 +290,29 @@ mod tests {
 
     fn secs(n: u64) -> Duration {
         Duration::from_secs(n)
+    }
+
+    #[test]
+    fn kafka_declares_its_settings_and_reads_through_them() {
+        use xcore::settings::Given;
+        assert!(KafkaTransport::SETTINGS.problems().is_empty());
+        let given = [
+            ("topic".to_string(), Given::Text("orders".to_string())),
+            ("partition".to_string(), Given::Integer(3)),
+            ("offset".to_string(), Given::Integer(41)),
+            ("timeout".to_string(), Given::Text("5s".to_string())),
+        ];
+        let built = KafkaTransport::open("broker:9092", Applies::Receive, &given).expect("built");
+        assert_eq!(
+            (built.bootstrap.as_str(), built.topic.as_str()),
+            ("broker:9092", "orders")
+        );
+        assert_eq!((built.partition, built.cursor()), (3, 41));
+        assert_eq!(built.timeout, Some(secs(5)));
+        let Err(refused) = KafkaTransport::open("broker:9092", Applies::Send, &given) else {
+            panic!("a Send Location reads from no offset");
+        };
+        assert!(refused.message.contains("\"offset\""), "{refused}");
     }
 
     #[test]
