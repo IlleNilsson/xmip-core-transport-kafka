@@ -17,6 +17,8 @@ path = "src/lib.rs"
 # A Technology depends on its parent Capability, never the reverse
 # (repository-model.md). Kafka is a size, a header and typed fields.
 transport = { package = "xmip-core-transport", git = "https://github.com/IlleNilsson/xmip-core-transport", branch = "main" }
+# A target read as a URI writes it (`net::Target`).
+net = { package = "xmip-core-library-net", git = "https://github.com/IlleNilsson/xmip-core-library-net", branch = "main" }
 # The estate's encoding primitives: the byte cursor and writer, the varint and zig-zag, and CRC-32C.
 codec = { package = "xmip-core-library-codec", git = "https://github.com/IlleNilsson/xmip-core-library-codec", branch = "main" }
 # The event capability's wire (ADR-0065 clause 3): the Wire this crate

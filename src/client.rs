@@ -49,6 +49,26 @@ impl Client {
         })
     }
 
+    /// Connect to the leader of `topic`'s partitions, asking `bootstrap`
+    /// who that is: the connection to `bootstrap` itself where it leads or
+    /// names no leader. The one leader lookup, for kafka and redpanda both.
+    ///
+    /// # Errors
+    /// Where no broker could be reached or the topic has no leader.
+    pub fn to_leader(
+        bootstrap: &str,
+        topic: &str,
+        client: &str,
+        timeout: Option<Duration>,
+    ) -> Result<Self> {
+        let mut near = Self::connect(bootstrap, client, timeout)?;
+        let metadata = near.metadata(topic)?;
+        if metadata.leader.is_empty() || metadata.leader == bootstrap {
+            return Ok(near);
+        }
+        Self::connect(&metadata.leader, client, timeout)
+    }
+
     /// Metadata v1 for `topic`.
     ///
     /// # Errors
