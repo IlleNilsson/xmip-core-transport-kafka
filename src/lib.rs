@@ -34,6 +34,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 pub use client::{Client, TopicMetadata};
+use net::Target;
 pub use records::Record;
 pub use session::{Event, Session};
 use transport::Configured;
@@ -55,6 +56,9 @@ pub struct KafkaTransport {
     /// The connections a send produces on, connected once per broker and
     /// kept.
     producers: Pool<Client>,
+    /// The connection a receive fetches on, to the partition's leader:
+    /// connected on the first receive and kept.
+    fetchers: Pool<Client>,
 }
 
 impl KafkaTransport {
@@ -70,6 +74,7 @@ impl KafkaTransport {
             cursor: Mutex::new(0),
             timeout: None,
             producers: Pool::new(),
+            fetchers: Pool::new(),
         }
     }
 
@@ -112,12 +117,7 @@ impl KafkaTransport {
     /// # Errors
     /// Where no broker could be reached or the topic has no leader.
     pub fn connect(&self) -> Result<Client> {
-        let mut client = Client::connect(&self.bootstrap, &self.client, self.timeout)?;
-        let metadata = client.metadata(&self.topic)?;
-        if metadata.leader.is_empty() || metadata.leader == self.bootstrap {
-            return Ok(client);
-        }
-        Client::connect(&metadata.leader, &self.client, self.timeout)
+        Client::to_leader(&self.bootstrap, &self.topic, &self.client, self.timeout)
     }
 
     /// Bind as the far end clients connect to, and report the address.
@@ -140,7 +140,7 @@ impl KafkaTransport {
     /// `kafka://host:9092/orders` — or is a topic alone on this transport's
     /// cluster.
     fn resolve<'a>(&'a self, target: &'a str) -> (&'a str, &'a str) {
-        match socket::target("kafka", target) {
+        match Target::under(&["kafka"], target).map(|named| (named.authority(), named.path())) {
             Some((peer, "")) => (peer, &self.topic),
             Some(pair) => pair,
             None => (&self.bootstrap, target),
@@ -216,10 +216,15 @@ impl Transport for KafkaTransport {
         Directions::BOTH
     }
 
-    /// The records from the cursor on, the cursor moved past the last.
+    /// The records from the cursor on, the cursor moved past the last,
+    /// fetched on the connection the first receive opened to the leader
+    /// and kept.
     fn receive(&self) -> Result<Vec<Arrived>> {
-        let mut client = self.connect()?;
-        let records = client.fetch(&self.topic, self.partition, self.cursor())?;
+        let records = self.fetchers.exchange(
+            self.bootstrap.as_str(),
+            || self.connect(),
+            |client| client.fetch(&self.topic, self.partition, self.cursor()),
+        )?;
         let mut arrived = Vec::with_capacity(records.len());
         for record in records {
             arrived.push(Arrived::new(
@@ -386,6 +391,53 @@ mod tests {
         assert!(arrived[1].origin_uri.ends_with("/orders/0?offset=2"));
         assert_eq!(cursor, 3);
         assert!(far_end.claims().is_none());
+    }
+
+    #[test]
+    fn a_thousand_receives_connect_once_and_a_connection_the_broker_closed_is_replaced() {
+        const RECEIVES: usize = 1000;
+        let far_end = KafkaTransport::new("127.0.0.1:0", "orders").timing_out_after(secs(5));
+        let (listener, address) = far_end.bind().expect("binding");
+        let near = KafkaTransport::new(address, "orders").timing_out_after(secs(5));
+        let fetched = |session: &mut Session, from: i64| {
+            let event = session.next_event().expect("fetch");
+            assert!(
+                matches!(event, Some(Event::Fetched { offset, .. }) if offset == from),
+                "{event:?}"
+            );
+        };
+        std::thread::scope(|scope| {
+            let receiver = scope.spawn(|| {
+                let began = std::time::Instant::now();
+                let mut arrived = 0;
+                for _ in 0..RECEIVES {
+                    arrived += near.receive()?.len();
+                }
+                let took = began.elapsed();
+                // Generous for a debug build under load: a millisecond a fetch.
+                assert!(took < Duration::from_millis(RECEIVES as u64), "{took:?}");
+                arrived += near.receive()?.len();
+                Ok::<_, transport::TransportError>(arrived)
+            });
+            // One connection for every fetch: one session accepted.
+            let mut session = far_end
+                .accept_one(&listener)
+                .expect("accepting")
+                .with_records("orders", &[b"zero"]);
+            fetched(&mut session, 0);
+            for _ in 1..RECEIVES {
+                fetched(&mut session, 1);
+            }
+            drop(session);
+            let mut again = far_end
+                .accept_one(&listener)
+                .expect("a new connection")
+                .with_records("orders", &[b"zero", b"one"]);
+            fetched(&mut again, 1);
+            assert_eq!(receiver.join().expect("thread").expect("fetched"), 2);
+        });
+        assert_eq!(near.cursor(), 2);
+        assert_eq!(near.fetchers.opened(), 2);
     }
 
     #[test]
