@@ -33,6 +33,13 @@ resilience = { package = "xmip-core-resilience", git = "https://github.com/IlleN
 xcore = { package = "xmip-core", git = "https://github.com/IlleNilsson/xmip-core", branch = "main" }
 
 [dev-dependencies]
+# The test cluster's names, from its `xmip.toml` (`configure::fixture`;
+# ADR-0056, amendment 2026-10-03): no test writes a cluster or node name.
+configure = { package = "xmip-core-configure", git = "https://github.com/IlleNilsson/xmip-core-configure", branch = "main", features = ["test-support"] }
+# The policy the forwarding tests hand their hub, allowing their Party:
+# the authorize capability's party technology. Being in the process admits
+# nobody.
+authorize-party = { package = "xmip-core-authorize-party", git = "https://github.com/IlleNilsson/xmip-core-authorize-party", branch = "main" }
 # The loopback payloads and the latency spread the tests drive, from the
 # capability's test support and never a production build (ADR-0044).
 transport = { package = "xmip-core-transport", git = "https://github.com/IlleNilsson/xmip-core-transport", branch = "main", features = ["test-support"] }
