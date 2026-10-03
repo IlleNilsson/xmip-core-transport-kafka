@@ -13,13 +13,14 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use audit::program_audit::ProgramAudit;
+use authorize_party::PartyPolicy;
 use event::Event;
 use event::binding::{Binding, Mode};
 use event::filter::Filter;
 use event::forward::Forwarder;
-use event::hub::{Hub, Subscription};
+use event::hub::{EventSubscription, Hub};
 use event::outcome::Outcome;
-use event::subscriber::{SameProcess, Subscriber};
+use event::subscriber::Subscriber;
 use node::Stage;
 use resilience::Guard;
 use retry::Retry;
@@ -31,6 +32,12 @@ use xmip_core_transport_kafka::records::Record;
 
 /// The subscriber, a remote Party.
 const PARTY: PartyId = PartyId::new(21);
+
+/// A hub whose policy allows the Party these tests subscribe as: being in
+/// this process admits nobody (ADR-0065, amendment 2026-09-26).
+fn allowing() -> Hub {
+    Hub::new(vec![Arc::new(PartyPolicy::new().allow(PARTY))])
+}
 
 const TOPIC: &str = "xmip.events";
 
@@ -54,7 +61,7 @@ fn audit_at(name: &str) -> PathBuf {
     at
 }
 
-fn subscribed(hub: &Hub, at: &Path) -> Subscription {
+fn subscribed(hub: &Hub, at: &Path) -> EventSubscription {
     let audit = ProgramAudit::new("xmip-core-transport-kafka tests", Some(at));
     hub.subscribe(
         Subscriber::in_process(PARTY, audit),
@@ -68,7 +75,10 @@ fn published() -> Event {
     Event::completed(
         Stage::Send,
         Outcome::Failure,
-        "xmip:///c/node/n/send/billing",
+        format!(
+            "{}/send/billing",
+            configure::fixture::test_cluster().node_scope(0)
+        ),
     )
     .in_journey(JourneyId::new(7))
     .on_artifact("billing")
@@ -112,7 +122,7 @@ fn wire(address: &str) -> EventWire {
 fn a_published_event_arrives_as_the_same_event_in_either_mode() {
     let at = audit_at("modes");
     for mode in [Mode::Structured, Mode::Binary] {
-        let hub = Hub::new(vec![Arc::new(SameProcess)]);
+        let hub = allowing();
         let (address, told) = far_end(0);
         let mut forwarder =
             Forwarder::new(subscribed(&hub, &at), Binding::Kafka, mode, wire(&address));
@@ -146,7 +156,7 @@ fn a_published_event_arrives_as_the_same_event_in_either_mode() {
 #[test]
 fn a_leader_that_refuses_is_retried_and_the_events_arrive_in_order() {
     let at = audit_at("again");
-    let hub = Hub::new(vec![Arc::new(SameProcess)]);
+    let hub = allowing();
     let (address, told) = far_end(2);
     let subscription = subscribed(&hub, &at);
     let mut forwarder = Forwarder::new(subscription, Binding::Kafka, Mode::Binary, wire(&address));
@@ -173,7 +183,7 @@ fn a_leader_that_refuses_is_retried_and_the_events_arrive_in_order() {
 #[test]
 fn an_event_reaches_the_far_end_within_a_millisecond_apart_from_load() {
     let at = audit_at("latency");
-    let hub = Arc::new(Hub::new(vec![Arc::new(SameProcess)]));
+    let hub = Arc::new(allowing());
     let (address, told) = far_end(0);
     let mut forwarder = Forwarder::new(
         subscribed(&hub, &at),

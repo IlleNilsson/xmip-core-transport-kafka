@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use codec::cursor::Cursor;
 use codec::writer::ByteWriter;
-use transport::Arrived;
+use transport::Taken;
 use transport::error::{Result, classify, protocol_error};
 use transport::socket;
 
@@ -26,8 +26,8 @@ use crate::wire::{
 /// What the client did, as [`Session::next_event`] reports it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
-    /// The client produced; here is the Stream, one per record.
-    Produced(Arrived),
+    /// The client produced; here is what it produced, one per record.
+    Produced(Taken),
     /// The client fetched `topic`'s partition from this offset.
     Fetched { topic: String, offset: i64 },
 }
@@ -38,7 +38,7 @@ pub struct Session {
     peer: SocketAddr,
     local: String,
     logs: BTreeMap<(String, i32), Vec<Record>>,
-    pending: Vec<Arrived>,
+    pending: Vec<Taken>,
     refusing: Option<(i16, u32)>,
 }
 
@@ -103,7 +103,7 @@ impl Session {
     ///
     /// # Errors
     /// Where the connection broke, or nothing arrived before the timeout.
-    pub fn next_produce(&mut self) -> Result<Option<Arrived>> {
+    pub fn next_produce(&mut self) -> Result<Option<Taken>> {
         loop {
             if !self.pending.is_empty() {
                 return Ok(Some(self.pending.remove(0)));
@@ -274,13 +274,13 @@ impl Session {
     }
 
     /// Append the records of `set` to the log; the base offset, and the
-    /// first Stream into `first`, the rest pending.
+    /// first record into `first`, the rest pending.
     fn append(
         &mut self,
         topic: &str,
         partition: i32,
         set: &[u8],
-        first: &mut Option<Arrived>,
+        first: &mut Option<Taken>,
     ) -> Result<i64> {
         let records = decode_batches(set)?;
         let log = self.logs.entry((topic.to_string(), partition)).or_default();
@@ -288,7 +288,7 @@ impl Session {
         for (i, record) in records.into_iter().enumerate() {
             let offset = base + i64::try_from(i).unwrap_or(0);
             let origin = format!("kafka://{}/{topic}/{partition}?offset={offset}", self.peer);
-            let arrived = Arrived::new(origin, record.value.clone().unwrap_or_default());
+            let arrived = Taken::new(origin, record.value.clone().unwrap_or_default());
             if first.is_none() {
                 *first = Some(arrived);
             } else {
