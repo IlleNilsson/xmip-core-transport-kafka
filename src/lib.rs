@@ -251,13 +251,29 @@ impl Transport for KafkaTransport {
     /// Produce on the connection kept for the broker, connected on the
     /// first send to it, acknowledged by the leader.
     fn send(&self, target: &str, bytes: &[u8]) -> Result<()> {
+        self.produce(target, bytes, None)
+    }
+
+    /// The key is the record's key. A broker appends a record produced
+    /// again — an idempotent producer's deduplication holds within one
+    /// producer session only — so the key is what a consumer recognises a
+    /// repeat by, and what a compacted topic keeps one record of.
+    fn send_keyed(&self, target: &str, bytes: &[u8], key: &str) -> Result<()> {
+        self.produce(target, bytes, Some(key))
+    }
+}
+
+impl KafkaTransport {
+    /// The one send: one record on the target's topic, under `key` where
+    /// there is one, on the connection kept for its broker.
+    fn produce(&self, target: &str, bytes: &[u8], key: Option<&str>) -> Result<()> {
         let (broker, topic) = self.resolve(target);
         self.producers.exchange(
             broker,
             || Client::connect(broker, &self.client, self.timeout),
             |client| {
                 client
-                    .produce(topic, self.partition, None, bytes)
+                    .produce(topic, self.partition, key.map(str::as_bytes), bytes)
                     .map(|_| ())
             },
         )

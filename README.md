@@ -37,6 +37,10 @@ A Receive Location fetches on a connection to the partition's leader, found and 
 
 A fetched record is acknowledged after the runtime's whole receive cycle, not as it is fetched: `Accepted` moves the cursor past the record, and only where the cursor stands at it, so it advances contiguously (`transport::contiguous::Contiguous`); `Refused` moves it the same way, since a log has no place to reject a record into and a refused record is not read again (the runtime audited the refusal); `Failed` leaves the cursor, and the failed record and those after it are fetched again — at least once, never a skip. This crate keeps no consumer group, so the acknowledgement is an in-memory step with no broker round trip. Until 2026-10-02 a fetch moved the cursor past what it fetched.
 
+## The deduplication key
+
+A keyed send (`Transport::send_keyed`, built 2026-10-04) carries the Journey's identifier as the record's key, the same on every attempt of one Journey; the partition stays the Location's. A broker appends a record produced again — an idempotent producer's deduplication, not spoken here, holds within one producer session only — so the key is what a consumer recognises a repeat by, and what a compacted topic keeps one record of. An unkeyed `send` writes a null key.
+
 ## Toolchain
 
 `rust-toolchain.toml` pins the toolchain for the whole estate. Do not change it
