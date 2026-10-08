@@ -38,6 +38,7 @@ pub use client::{Client, TopicMetadata};
 use net::Target;
 pub use records::Record;
 pub use session::{Event, Session};
+use transport::ArrivalIdentity;
 use transport::Configured;
 use transport::arrived::next_arrival;
 use transport::contiguous::Contiguous;
@@ -45,7 +46,7 @@ use transport::error::Result;
 use transport::listening::{Accepting, Listening};
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
 use transport::socket;
-use transport::{Arrived, Directions, Pool, Transport};
+use transport::{Arrived, Directions, Headers, Pool, Transport};
 use xcore::settings::{Applies, Kind, Presence, Read, Setting, Settings};
 
 pub struct KafkaTransport {
@@ -236,14 +237,18 @@ impl Transport for KafkaTransport {
         let mut arrived = Vec::with_capacity(records.len());
         for record in records {
             let offset = record.offset;
-            arrived.push(Arrived::whole(
-                format!(
-                    "kafka://{}/{}/{}?offset={offset}",
-                    self.bootstrap, self.topic, self.partition
-                ),
-                record.value.unwrap_or_default(),
-                self.cursor.advancing(offset, offset + 1),
-            ));
+            arrived.push(
+                Arrived::whole(
+                    format!(
+                        "kafka://{}/{}/{}?offset={offset}",
+                        self.bootstrap, self.topic, self.partition
+                    ),
+                    record.value.unwrap_or_default(),
+                    self.cursor.advancing(offset, offset + 1),
+                )
+                .detected()
+                .with_headers(Headers::of("kafka").octets(record.headers)),
+            );
         }
         Ok(arrived)
     }
@@ -305,6 +310,12 @@ pub fn producing(timeout: Option<Duration>) -> impl Accepting {
 }
 
 impl Loopback for KafkaTransport {
+    fn arrival_identity(&self) -> ArrivalIdentity {
+        ArrivalIdentity::Unnamed(
+            "the broker delivers it: its headers say who sent it, the peer is the broker",
+        )
+    }
+
     fn far_end(&self) -> Result<Box<dyn FarEnd>> {
         Ok(Box::new(Listening::new(
             producing(self.timeout),
