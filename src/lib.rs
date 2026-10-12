@@ -219,6 +219,10 @@ impl Transport for KafkaTransport {
         transport::Arrivals::Ordered("a cursor moves only contiguously")
     }
 
+    fn waiting(&self) -> transport::Waiting {
+        transport::Waiting::Waits("a fetch waits on the broker for a record, up to 100 ms")
+    }
+
     /// The records from the cursor on, fetched on the connection the first
     /// receive opened to the leader and kept. Nothing moves the cursor
     /// here: a record's [`transport::Verdict::Accepted`] moves it past that
