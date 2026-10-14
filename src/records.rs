@@ -213,7 +213,7 @@ mod tests {
         let records = decode_batches(&two).expect("decode two");
         assert_eq!(records.len(), 4);
         assert_eq!(records[3].offset, 13);
-        assert!(decode_batches(&[]).expect("empty").is_empty());
+        assert_eq!(decode_batches(&[]).expect("empty"), [] as [Record; 0]);
     }
 
     #[test]
@@ -234,7 +234,7 @@ mod tests {
         let records = decode_batches(&batch).expect("decode");
         assert_eq!(records[0].headers, headers);
         assert_eq!(records[0].value.as_deref(), Some(&b"{}"[..]));
-        assert!(records[1].headers.is_empty());
+        assert_eq!(records[1].headers, [] as [(String, Vec<u8>); 0]);
         let again = encode_batch(5, &[Entry::from(&records[0])]);
         let read = decode_batches(&again).expect("again");
         assert_eq!(read[0].headers, headers, "a record written as it was read");
@@ -264,7 +264,10 @@ mod tests {
             .bytes(&[0xff])
             .varint(zigzag(0));
         assert!(headers(&mut Cursor::new(&binary_key)).is_err(), "not UTF-8");
-        assert!(headers(&mut Cursor::new(&[])).expect("none").is_empty());
+        assert_eq!(
+            headers(&mut Cursor::new(&[])).expect("none"),
+            [] as [(String, Vec<u8>); 0]
+        );
     }
 
     #[test]
