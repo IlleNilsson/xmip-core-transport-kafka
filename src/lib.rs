@@ -349,7 +349,7 @@ mod tests {
     #[test]
     fn kafka_declares_its_settings_and_reads_through_them() {
         use xcore::settings::Given;
-        assert!(KafkaTransport::SETTINGS.problems().is_empty());
+        assert_eq!(KafkaTransport::SETTINGS.problems(), [] as [String; 0]);
         let given = [
             ("topic".to_string(), Given::Text("orders".to_string())),
             ("partition".to_string(), Given::Integer(3)),
