@@ -43,6 +43,8 @@ authorize-party = { package = "xmip-core-authorize-party", git = "https://github
 # The loopback payloads and the latency spread the tests drive, from the
 # capability's test support and never a production build (ADR-0044).
 transport = { package = "xmip-core-transport", git = "https://github.com/IlleNilsson/xmip-core-transport", branch = "main", features = ["test-support"] }
+# The processor time an Event's threads used, which the tests hold.
+xcore = { package = "xmip-core", git = "https://github.com/IlleNilsson/xmip-core", branch = "main", features = ["test-support"] }
 # The forwarding tests: a subscriber's audit, the stage an Event reports,
 # and one real retry guard.
 audit = { package = "xmip-core-audit", git = "https://github.com/IlleNilsson/xmip-core-audit", branch = "main" }
