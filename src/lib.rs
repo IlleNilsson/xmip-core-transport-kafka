@@ -232,14 +232,14 @@ impl Transport for KafkaTransport {
     /// refused one is not read again; [`transport::Verdict::Failed`] leaves
     /// it, and the failed record and those after it are fetched again (at
     /// least once, never a skip).
-    fn receive(&self) -> Result<Vec<Arrived>> {
+    fn receive_up_to(&self, most: usize) -> Result<Vec<Arrived>> {
         let records = self.fetchers.exchange(
             self.bootstrap.as_str(),
             || self.connect(),
             |client| client.fetch(&self.topic, self.partition, self.cursor()),
         )?;
         let mut arrived = Vec::with_capacity(records.len());
-        for record in records {
+        for record in records.into_iter().take(most) {
             let offset = record.offset;
             arrived.push(
                 Arrived::whole(
@@ -257,18 +257,19 @@ impl Transport for KafkaTransport {
         Ok(arrived)
     }
 
-    /// Produce on the connection kept for the broker, connected on the
-    /// first send to it, acknowledged by the leader.
-    fn send(&self, target: &str, bytes: &[u8]) -> Result<()> {
-        self.produce(target, bytes, None)
+    fn sending(&self) -> transport::Sending {
+        transport::Sending::Gathered("a record batch carries its CRC-32C over the whole of it")
     }
 
+    /// Produce on the connection kept for the broker, connected on the
+    /// first send to it, acknowledged by the leader.
     /// The key is the record's key. A broker appends a record produced
     /// again — an idempotent producer's deduplication holds within one
     /// producer session only — so the key is what a consumer recognises a
     /// repeat by, and what a compacted topic keeps one record of.
-    fn send_keyed(&self, target: &str, bytes: &[u8], key: &str) -> Result<()> {
-        self.produce(target, bytes, Some(key))
+    fn send_from(&self, target: &str, outgoing: transport::Outgoing<'_>) -> Result<()> {
+        let bytes: &[u8] = &outgoing.gather()?;
+        self.produce(target, bytes, outgoing.key())
     }
 }
 
