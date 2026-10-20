@@ -265,7 +265,7 @@ impl Transport for KafkaTransport {
     /// first send to it, acknowledged by the leader.
     /// The key is the record's key. A broker appends a record produced
     /// again — an idempotent producer's deduplication holds within one
-    /// producer session only — so the key is what a consumer recognises a
+    /// producer session only — so the key is what a consumer recognizes a
     /// repeat by, and what a compacted topic keeps one record of.
     fn send_from(&self, target: &str, outgoing: transport::Outgoing<'_>) -> Result<()> {
         let bytes: &[u8] = &outgoing.gather()?;
