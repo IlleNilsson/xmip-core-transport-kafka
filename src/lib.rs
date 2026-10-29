@@ -139,7 +139,7 @@ impl KafkaTransport {
     /// `kafka://host:9092/orders` — or is a topic alone on this transport's
     /// cluster.
     fn resolve<'a>(&'a self, target: &'a str) -> (&'a str, &'a str) {
-        match Target::under(&["kafka"], target).map(|named| (named.authority(), named.path())) {
+        match Target::under(Self::SCHEMES, target).map(|named| (named.authority(), named.path())) {
             Some((peer, "")) => (peer, &self.topic),
             Some(pair) => pair,
             None => (&self.bootstrap, target),
@@ -189,6 +189,9 @@ impl Configured for KafkaTransport {
             },
         ],
     };
+
+    /// The schemes a Location's address is entered with to choose this technology.
+    const SCHEMES: &'static [&'static str] = &["kafka"];
 
     fn configured(address: &str, settings: &Read) -> Result<Self> {
         let mut transport = Self::new(address, settings.text("topic"));
