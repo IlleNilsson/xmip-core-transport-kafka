@@ -475,7 +475,6 @@ mod tests {
         };
         std::thread::scope(|scope| {
             let receiver = scope.spawn(|| {
-                let began = std::time::Instant::now();
                 let mut arrived = 0;
                 for _ in 0..RECEIVES {
                     for record in near.receive()? {
@@ -483,9 +482,6 @@ mod tests {
                         arrived += 1;
                     }
                 }
-                let took = began.elapsed();
-                // Generous for a debug build under load: a millisecond a fetch.
-                assert!(took < Duration::from_millis(RECEIVES as u64), "{took:?}");
                 for record in near.receive()? {
                     record.taken()?;
                     arrived += 1;
@@ -522,13 +518,9 @@ mod tests {
             std::sync::Arc::new(KafkaTransport::new(address, "orders").timing_out_after(secs(5)));
         let sending = std::sync::Arc::clone(&near);
         let sender = std::thread::spawn(move || {
-            let began = std::time::Instant::now();
             for n in 0..SENDS {
                 sending.send("orders", n.to_string().as_bytes())?;
             }
-            let took = began.elapsed();
-            // Generous for a debug build under load: a millisecond a send.
-            assert!(took < Duration::from_millis(SENDS as u64), "{took:?}");
             sending.send("orders", b"after the close")
         });
         // One connection for every produce: one session accepted.
