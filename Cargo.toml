@@ -32,6 +32,14 @@ resilience = { package = "xmip-core-resilience", git = "https://github.com/IlleN
 # The Party a Wire carries to, by identifier.
 xcore = { package = "xmip-core", git = "https://github.com/IlleNilsson/xmip-core", branch = "main" }
 
+# The module's timing program (doc/governance/rust-style.md section 5c): a
+# plain cargo test leaves it out, and the landing runs it after every other
+# test here, alone, one test at a time, so what it measures is Xmip's work.
+[[test]]
+name = "measured"
+path = "tests/measured/main.rs"
+test = false
+
 [dev-dependencies]
 # The test cluster's names, from its `xmip.toml` (`configure::fixture`;
 # ADR-0056, amendment 2026-10-03): no test writes a cluster or node name.

@@ -1,121 +1,24 @@
 //! The event capability over Kafka (ADR-0065 clause 3): a subscription
 //! forwarded through this transport's wire to its own far end, read back
 //! as the Event that was published — in both modes of the binding, at
-//! least once through a leader that refuses, and near, very near real
-//! time (the owner, 2026-09-26).
+//! least once through a leader that refuses. How near real time it is (the
+//! owner, 2026-09-26) is held in the module's timing program,
+//! `tests/measured`.
 
 use std::fs;
-use std::net::TcpListener;
-use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver};
-use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use audit::program_audit::ProgramAudit;
-use authorize_party::PartyPolicy;
 use event::Event;
 use event::binding::{Binding, Mode};
-use event::filter::Filter;
 use event::forward::Forwarder;
-use event::hub::{EventSubscription, Hub};
-use event::outcome::Outcome;
-use event::subscriber::Subscriber;
-use node::Stage;
 use resilience::Guard;
 use retry::Retry;
-use transport::latency::TcpControl;
-use xcore::latency::{spin, spread};
-use xcore::processor_time::ProcessorTime;
-use xcore::{JourneyId, PartyId};
-use xmip_core_transport_kafka::Session;
-use xmip_core_transport_kafka::event_wire::{EventWire, Topic, carried};
-use xmip_core_transport_kafka::records::Record;
+use xmip_core_transport_kafka::event_wire::carried;
 
-/// The subscriber, a remote Party.
-const PARTY: PartyId = PartyId::new(21);
+#[path = "event_wire/fixture.rs"]
+mod fixture;
 
-/// A hub whose policy allows the Party these tests subscribe as: being in
-/// this process admits nobody (ADR-0065, amendment 2026-09-26).
-fn allowing() -> Hub {
-    Hub::new(vec![Arc::new(PartyPolicy::new().allow(PARTY))])
-}
-
-const TOPIC: &str = "xmip.events";
-
-/// How many Events the latency test forwards.
-const ROUNDS: usize = 300;
-
-/// The bound: about a millisecond, apart from load.
-const BOUND: Duration = Duration::from_millis(1);
-
-const TIMEOUT: Duration = Duration::from_secs(2);
-
-/// A temporary audit directory of its own, never empty and never the
-/// estate's.
-fn audit_at(name: &str) -> PathBuf {
-    let at = std::env::temp_dir().join(format!("xmip-kafka-{name}-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&at);
-    at
-}
-
-fn subscribed(hub: &Hub, at: &Path) -> EventSubscription {
-    let audit = ProgramAudit::new("xmip-core-transport-kafka tests", Some(at));
-    hub.subscribe(
-        Subscriber::in_process(PARTY, audit),
-        Filter::everything(),
-        0,
-    )
-    .expect("allowed")
-}
-
-fn published() -> Event {
-    Event::completed(
-        Stage::Send,
-        Outcome::Failure,
-        format!(
-            "{}/send/billing",
-            configure::fixture::test_cluster().node_scope(0)
-        ),
-    )
-    .in_journey(JourneyId::new(7))
-    .on_artifact("billing")
-    .about(PARTY)
-    .saying("status", "503 Service Unavailable")
-}
-
-/// The far end: one broker session after another, the first `refusing`
-/// produces answered `REQUEST_TIMED_OUT`, each record kept handed over with
-/// the moment it arrived.
-fn far_end(refusing: u32) -> (String, Receiver<(Instant, Record)>) {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("a port");
-    let address = listener.local_addr().expect("address").to_string();
-    let (tell, told) = mpsc::channel();
-    thread::spawn(move || {
-        let mut refusing = refusing;
-        while let Ok(session) = Session::accept(&listener, Some(TIMEOUT)) {
-            // A refused attempt drops its connection, so each session
-            // refuses once while refusals are left.
-            let mut session = session.refusing(7, u32::from(refusing > 0));
-            refusing = refusing.saturating_sub(1);
-            while let Ok(Some(_)) = session.next_produce() {
-                let now = Instant::now();
-                let record = session.log(TOPIC, 0).last().expect("kept").clone();
-                if tell.send((now, record)).is_err() {
-                    return;
-                }
-            }
-        }
-    });
-    (address, told)
-}
-
-fn wire(address: &str) -> EventWire {
-    EventWire::new()
-        .to(PARTY, Topic::new(address, TOPIC).presenting("xmip-events"))
-        .timing_out_after(TIMEOUT)
-}
-
+use fixture::{TIMEOUT, allowing, audit_at, far_end, published, subscribed, wire};
 #[test]
 fn a_published_event_arrives_as_the_same_event_in_either_mode() {
     let at = audit_at("modes");
@@ -175,82 +78,5 @@ fn a_leader_that_refuses_is_retried_and_the_events_arrive_in_order() {
         })
         .collect();
     assert_eq!(arrived, [first, second], "once each, in order");
-    let _ = fs::remove_dir_all(&at);
-}
-
-#[test]
-fn an_event_reaches_the_far_end_within_a_millisecond_apart_from_load() {
-    let at = audit_at("latency");
-    let hub = Arc::new(allowing());
-    let (address, told) = far_end(0);
-    let mut forwarder = Forwarder::new(
-        subscribed(&hub, &at),
-        Binding::Kafka,
-        Mode::Binary,
-        wire(&address),
-    );
-    // The connection is opened once, before the rounds: what is measured
-    // is an Event's way, not a connect.
-    hub.publish(published());
-    let once = Retry::new(1, Duration::ZERO);
-    assert_eq!(forwarder.pump(TIMEOUT, &[&once as &dyn Guard]).carried, 1);
-    told.recv_timeout(TIMEOUT).expect("the first, produced");
-    // The forwarding thread's processor time over every Event: its waits
-    // are not counted, only its work.
-    let forwarding = thread::spawn(move || {
-        let spent = ProcessorTime::thread();
-        let once = Retry::new(1, Duration::ZERO);
-        let mut carried = 0;
-        while carried < ROUNDS {
-            carried += forwarder
-                .pump(Duration::from_secs(5), &[&once as &dyn Guard])
-                .carried;
-        }
-        spent.elapsed()
-    });
-    let sent = Arc::new(Mutex::new(Vec::with_capacity(ROUNDS)));
-    let receiving = {
-        let sent = Arc::clone(&sent);
-        thread::spawn(move || {
-            (0..ROUNDS)
-                .map(|index| {
-                    let (arrived, _) = told.recv_timeout(Duration::from_secs(5)).expect("produced");
-                    arrived - sent.lock().expect("sent")[index]
-                })
-                .collect::<Vec<Duration>>()
-        })
-    };
-    let mut control = TcpControl::start();
-    let mut publishing = Duration::ZERO;
-
-    for _ in 0..ROUNDS {
-        spin(Duration::from_micros(500));
-        let event = published();
-        sent.lock().expect("sent").push(Instant::now());
-        let from = ProcessorTime::thread();
-        hub.publish(event);
-        publishing += from.elapsed();
-        spin(Duration::from_micros(500));
-        control.poke();
-    }
-
-    let taken = spread(
-        "publish to the Kafka far end",
-        receiving.join().expect("received"),
-    );
-    let forwarding_time = forwarding.join().expect("forwarded");
-    let machine = control.load();
-    // The wake is a wake: the fastest of each five against the machine's.
-    assert!(
-        taken.fastest_of_five < BOUND + machine.fastest_of_five,
-        "the fastest of five {:?}, the machine's own {:?}",
-        taken.fastest_of_five,
-        machine.fastest_of_five
-    );
-    // Xmip's own work: the publisher's and the forwarder's processor time,
-    // an Event's share.
-    let own = (publishing + forwarding_time) / u32::try_from(ROUNDS).expect("a count");
-    println!("Xmip's own processor time: {own:?} an Event");
-    assert!(own < BOUND, "Xmip's own processor time, {own:?} an Event");
     let _ = fs::remove_dir_all(&at);
 }

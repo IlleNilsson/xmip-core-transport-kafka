@@ -27,9 +27,9 @@ transport's next layers, and a credential joins the Party's `Topic` then.
 The connections to each Party are the capability's `Pool`, kept between
 events. `event_wire::carried`
 is the read side: a record a receiving Xmip fetched, as the binding reads a
-`WireEvent` from. `tests/event_wire.rs` holds publish to far-end receipt
-to a millisecond at the median and five at the 99th percentile, apart from
-load.
+`WireEvent` from. The module's timing program, `tests/measured`, holds
+publish to far-end receipt to a millisecond at the median and five at the
+99th percentile, apart from load.
 
 A Send Location produces on a connection kept per broker (`transport::Pool`). Until 2026-09-27 every send connected.
 
