@@ -12,6 +12,7 @@
 //!   apart from load, and Xmip's own processor time an Event is under a
 //!   millisecond (the shared far end is `tests/event_wire/fixture.rs`).
 
+use std::assert_matches;
 use std::fs;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -64,7 +65,7 @@ fn a_thousand_fetches_take_a_millisecond_each_at_most() {
             .with_records("orders", &[b"zero"]);
         for _ in 0..RECEIVES {
             let event = session.next_event().expect("fetch");
-            assert!(matches!(event, Some(Event::Fetched { .. })), "{event:?}");
+            assert_matches!(event, Some(Event::Fetched { .. }), "{event:?}");
         }
         assert_eq!(receiver.join().expect("thread").expect("fetched"), 1);
     });

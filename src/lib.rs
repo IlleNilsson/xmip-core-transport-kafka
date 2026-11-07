@@ -343,6 +343,7 @@ impl Loopback for KafkaTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
     use transport::Refusal;
     use transport::payload::{edge_payloads, sized_payloads};
 
@@ -468,8 +469,9 @@ mod tests {
         let near = KafkaTransport::new(address, "orders").timing_out_after(secs(5));
         let fetched = |session: &mut Session, from: i64| {
             let event = session.next_event().expect("fetch");
-            assert!(
-                matches!(event, Some(Event::Fetched { offset, .. }) if offset == from),
+            assert_matches!(
+                event,
+                Some(Event::Fetched { offset, .. }) if offset == from,
                 "{event:?}"
             );
         };
