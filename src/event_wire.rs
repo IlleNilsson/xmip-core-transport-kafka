@@ -9,7 +9,7 @@
 //! attribute as a record header, and the content type as the
 //! `content-type` header — and takes it back off a record the same way.
 //! One record per event, produced as soon as the forwarder has it, and
-//! acknowledged by the leader before [`Wire::carry`] answers `Ok`: at
+//! acknowledged by all in-sync replicas before [`Wire::carry`] answers `Ok`: at
 //! least once, the resilience guards deciding each attempt.
 //!
 //! **The identity presented** is configured per Party, as ADR-0019 clause
@@ -118,7 +118,7 @@ impl Default for EventWire {
 }
 
 impl Wire for EventWire {
-    /// One record on the Party's topic, acknowledged by the leader.
+    /// One record on the Party's topic, acknowledged by all in-sync replicas.
     fn carry(&self, party: PartyId, carried: &Carried) -> Result<(), Failure> {
         let topic = self.topics.get(&party).ok_or_else(|| {
             Failure::permanent(format!("no Kafka topic is configured for Party {party}"))

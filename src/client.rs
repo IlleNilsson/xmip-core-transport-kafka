@@ -16,6 +16,14 @@ use codec::writer::ByteWriter;
 
 use crate::wire::{API_FETCH, API_METADATA, API_PRODUCE, Kafka, KafkaWrite, read_message, request};
 
+/// The `acks` a produce asks for: -1, every in-sync replica has the record
+/// before the broker answers. The leader alone (1) loses an acknowledged
+/// record when it fails over before a follower copied it, and Xmip
+/// acknowledges only what is durable, so there is no setting for it; how
+/// many replicas are in sync at least is the topic's
+/// `min.insync.replicas`.
+pub const ALL_IN_SYNC_REPLICAS: i16 = -1;
+
 /// What a Metadata answered about one topic.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TopicMetadata {
@@ -124,7 +132,7 @@ impl Client {
     }
 
     /// Produce v3: one record to `partition` of `topic`, acknowledged by
-    /// the leader; the offset it was written at.
+    /// all in-sync replicas; the offset it was written at.
     ///
     /// # Errors
     /// Where the broker went away or answered an error.
@@ -139,8 +147,8 @@ impl Client {
     }
 
     /// Produce v3: one record — its key, value and headers — to
-    /// `partition` of `topic`, acknowledged by the leader; the offset it
-    /// was written at.
+    /// `partition` of `topic`, acknowledged by all in-sync replicas
+    /// ([`ALL_IN_SYNC_REPLICAS`]); the offset it was written at.
     ///
     /// # Errors
     /// Where the broker went away or answered an error.
@@ -148,7 +156,7 @@ impl Client {
         let batch = encode_batch(0, &[entry]);
         let mut body = Vec::new();
         body.nullable_string(None)
-            .i16_be(1)
+            .i16_be(ALL_IN_SYNC_REPLICAS)
             .i32_be(10_000)
             .count(1)
             .nullable_string(Some(topic))
