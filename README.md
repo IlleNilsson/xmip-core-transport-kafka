@@ -20,7 +20,7 @@ On them rides the event capability (ADR-0065 clause 3):
 [xmip-core-event](https://github.com/IlleNilsson/xmip-core-event)'s `Wire`
 and produces what the event crate's Kafka binding wrote as one record — the
 body its value, the `ce_` attributes and `content-type` its headers —
-acknowledged by the leader before it counts: at least once, the resilience
+acknowledged by all in-sync replicas before it counts: at least once, the resilience
 guards deciding each attempt. The identity presented for a Party is its
 topic and the `client.id` it produces under; SASL and TLS are this
 transport's next layers, and a credential joins the Party's `Topic` then.
@@ -33,9 +33,13 @@ publish to far-end receipt to a millisecond at the median and five at the
 
 A Send Location produces on a connection kept per broker (`transport::Pool`). Until 2026-09-27 every send connected.
 
+Every produce asks for `acks=-1` (`client::ALL_IN_SYNC_REPLICAS`): the broker answers once every in-sync replica has the record, how many at least being the topic's `min.insync.replicas`. Xmip acknowledges only what is durable, so there is no setting for it. Until 2026-11-09 a produce asked the leader alone (`acks=1`), and a leader that failed over before a follower copied the record lost a record Xmip had counted as sent.
+
 A Receive Location fetches on a connection to the partition's leader, found and connected on its first receive and kept; the offset it reads from is the transport's cursor. A connection the broker closed is replaced, and the leader asked again. Until 2026-09-28 every receive asked for metadata and connected. The leader lookup is `Client::to_leader`, the one the redpanda technology calls too.
 
-A fetched record is acknowledged after the runtime's whole receive cycle, not as it is fetched: `Accepted` moves the cursor past the record, and only where the cursor stands at it, so it advances contiguously (`transport::contiguous::Contiguous`); `Refused` moves it the same way, since a log has no place to reject a record into and a refused record is not read again (the runtime audited the refusal); `Failed` leaves the cursor, and the failed record and those after it are fetched again — at least once, never a skip. This crate keeps no consumer group, so the acknowledgement is an in-memory step with no broker round trip. Until 2026-10-02 a fetch moved the cursor past what it fetched.
+A fetched record is acknowledged after the runtime's whole receive cycle, not as it is fetched: `Accepted` moves the cursor past the record, and only where the cursor stands at it, so it advances contiguously (`transport::contiguous::Contiguous`); `Refused` moves it the same way, since a log has no place to reject a record into and a refused record is not read again (the runtime audited the refusal); `Failed` leaves the cursor, and the failed record and those after it are fetched again — at least once, never a skip. This crate keeps no consumer group, so the acknowledgement is an in-memory step with no broker round trip, and a Location that starts again reads again from its configured offset. Until 2026-10-02 a fetch moved the cursor past what it fetched.
+
+Each record is handed up once (`reading::Reading`, which the redpanda technology can call too). A Fetch answers whole record batches, so it may return records below the offset asked for; those are skipped. The next receive fetches past what was handed up, not from the cursor, since the runtime asks a waiting Location again while what it handed up is still in its receive cycle; a failed record, or one dropped untold, moves that mark back, so it and those after it are fetched again. Each acknowledgement moves the cursor from where the record before it ended, so the gaps a compacted topic leaves are crossed. Until 2026-11-09 a fetch read from the cursor: records still in their cycle were handed up again, and a batch's records below the offset were handed up, which held the cursor where it stood whenever a receive took no more than those.
 
 ## The deduplication key
 

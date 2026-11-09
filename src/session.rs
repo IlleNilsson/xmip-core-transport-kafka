@@ -40,6 +40,8 @@ pub struct Session {
     logs: BTreeMap<(String, i32), Vec<Record>>,
     pending: Vec<Taken>,
     refusing: Option<(i16, u32)>,
+    acks: Option<i16>,
+    batch: Option<usize>,
 }
 
 impl Session {
@@ -62,7 +64,25 @@ impl Session {
             logs: BTreeMap::new(),
             pending: Vec::new(),
             refusing: None,
+            acks: None,
+            batch: None,
         })
+    }
+
+    /// Answer a fetch as a broker does, with the whole batch that holds the
+    /// offset asked for: the log in batches of `records` from offset 0, so
+    /// a fetch from inside one returns the records before the offset too.
+    #[must_use]
+    pub const fn in_batches(mut self, records: usize) -> Self {
+        self.batch = Some(records);
+        self
+    }
+
+    /// The `acks` the latest produce asked for: -1 every in-sync replica,
+    /// 1 the leader alone, 0 no answer; `None` before a produce.
+    #[must_use]
+    pub const fn acks(&self) -> Option<i16> {
+        self.acks
     }
 
     /// Answer the next `times` produces with broker error `code`, keeping
@@ -203,7 +223,7 @@ impl Session {
         answer: &mut Vec<u8>,
     ) -> Result<Option<Event>> {
         reader.nullable_string()?;
-        reader.i16_be()?;
+        self.acks = Some(reader.i16_be()?);
         reader.i32_be()?;
         let topics = reader.count()?;
         answer.count(topics);
@@ -234,7 +254,8 @@ impl Session {
         Ok(first.map(Event::Produced))
     }
 
-    /// Fetch v4: the records from the offset on, in one batch.
+    /// Fetch v4: the records from the offset on, in one batch — or, served
+    /// [`Session::in_batches`], from the start of the batch that holds it.
     fn answer_fetch(&self, reader: &mut Cursor<'_>, answer: &mut Vec<u8>) -> Result<Option<Event>> {
         for _ in 0..4 {
             reader.i32_be()?;
@@ -254,12 +275,13 @@ impl Session {
                 let log = self.logs.get(&(topic.clone(), partition));
                 let high = log.map_or(0, |l| i64::try_from(l.len()).unwrap_or(0));
                 let set = log.map_or_else(Vec::new, |l| {
-                    let from = usize::try_from(offset).unwrap_or(0).min(l.len());
+                    let asked = usize::try_from(offset).unwrap_or(0).min(l.len());
+                    let from = self.batch.map_or(asked, |size| asked - asked % size.max(1));
                     let records: Vec<Entry<'_>> = l[from..].iter().map(Entry::from).collect();
                     if records.is_empty() {
                         Vec::new()
                     } else {
-                        encode_batch(offset, &records)
+                        encode_batch(i64::try_from(from).unwrap_or(offset), &records)
                     }
                 });
                 answer.i32_be(partition).i16_be(0).i64_be(high).i64_be(high);

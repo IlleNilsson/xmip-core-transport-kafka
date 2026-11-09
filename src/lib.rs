@@ -5,17 +5,20 @@
 //!
 //! Kafka is the event backbone: partitioned logs on a cluster of brokers,
 //! producers that append, consumers that read on from an offset they keep,
-//! on port 9092. A Receive Location fetches its partition from its cursor
-//! and hands each record's value up; the record's acknowledgement, after
-//! the runtime's receive cycle, moves the cursor past it when accepted or
-//! refused for good and leaves it when the cycle failed, so a failed record
-//! is fetched again. A Send Location produces. Either may instead accept
-//! clients directly through [`Session`], one broker's worth of protocol for
-//! one connection over logs kept in memory.
+//! on port 9092. A Receive Location fetches its partition past what it
+//! handed up and hands each record's value up once ([`Reading`]); the
+//! record's acknowledgement, after the runtime's receive cycle, moves the
+//! cursor past it when accepted or refused for good and leaves it when the
+//! cycle failed, so a failed record is fetched again. A Send Location
+//! produces, and a record counts as sent only once every in-sync replica
+//! has it: Xmip acknowledges only what is durable, so a leader that fails
+//! over loses nothing acknowledged. Either may instead accept clients
+//! directly through [`Session`], one broker's worth of protocol for one
+//! connection over logs kept in memory.
 //!
 //! What is here is the protocol as it stands since message format 2:
-//! Metadata v1 to find the leader, Produce v3 with acknowledgement from the
-//! leader, Fetch v4, record batches with their CRC-32C. Consumer groups,
+//! Metadata v1 to find the leader, Produce v3 acknowledged by all in-sync
+//! replicas, Fetch v4, record batches with their CRC-32C. Consumer groups,
 //! SASL, TLS, compression and idempotent producers are the next layers.
 //!
 //! The origin URI carries what the fetch knew: `kafka://broker/orders/0?offset=41`.
@@ -27,6 +30,7 @@
 
 pub mod client;
 pub mod event_wire;
+pub mod reading;
 pub mod records;
 pub mod session;
 pub mod wire;
@@ -36,17 +40,17 @@ use std::time::Duration;
 
 pub use client::{Client, TopicMetadata};
 use net::Target;
+pub use reading::Reading;
 pub use records::Record;
 pub use session::{Event, Session};
 use transport::ArrivalIdentity;
 use transport::Configured;
 use transport::arrived::next_arrival;
-use transport::contiguous::Contiguous;
 use transport::error::Result;
 use transport::listening::{Accepting, Listening};
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
 use transport::socket;
-use transport::{Arrived, Directions, Headers, Pool, Transport};
+use transport::{Arrived, Directions, Pool, Transport};
 use xcore::settings::{Applies, Kind, Presence, Read, Setting, Settings};
 
 pub struct KafkaTransport {
@@ -54,9 +58,9 @@ pub struct KafkaTransport {
     topic: String,
     partition: i32,
     client: String,
-    /// The offset the next receive reads from, which a record's
-    /// acknowledgement moves.
-    cursor: Contiguous<i64>,
+    /// The cursor a record's acknowledgement moves, and the mark of what
+    /// was handed up, which the next receive reads from.
+    reading: Reading,
     timeout: Option<Duration>,
     /// The connections a send produces on, connected once per broker and
     /// kept.
@@ -76,7 +80,7 @@ impl KafkaTransport {
             topic: topic.into(),
             partition: 0,
             client: "xmip".to_string(),
-            cursor: Contiguous::new(0),
+            reading: Reading::new(0),
             timeout: None,
             producers: Pool::new(),
             fetchers: Pool::new(),
@@ -93,7 +97,7 @@ impl KafkaTransport {
     /// Start reading from this offset rather than the beginning.
     #[must_use]
     pub fn from_offset(self, offset: i64) -> Self {
-        self.cursor.set(offset);
+        self.reading.set(offset);
         self
     }
 
@@ -104,10 +108,11 @@ impl KafkaTransport {
         self
     }
 
-    /// The offset the next receive reads from.
+    /// Past the last record acknowledged in order: where a receive reads
+    /// from once nothing it handed up is still in its receive cycle.
     #[must_use]
     pub fn cursor(&self) -> i64 {
-        self.cursor.at()
+        self.reading.cursor()
     }
 
     /// Connect to the partition's leader, asking the bootstrap broker who
@@ -226,38 +231,29 @@ impl Transport for KafkaTransport {
         transport::Waiting::Waits("a fetch waits on the broker for a record, up to 100 ms")
     }
 
-    /// The records from the cursor on, fetched on the connection the first
-    /// receive opened to the leader and kept. Nothing moves the cursor
-    /// here: a record's [`transport::Verdict::Accepted`] moves it past that
-    /// record, and only where it stands at that record, so it advances
-    /// contiguously ([`Contiguous`]); [`transport::Verdict::Refused`] moves
-    /// it the same way, as a log has no place to reject a record into and a
+    /// The records past those already handed up, fetched on the connection
+    /// the first receive opened to the leader and kept, each handed up once
+    /// ([`Reading`]): a record below the offset asked for, which a Fetch
+    /// returns with the rest of its batch, is skipped. Nothing moves the
+    /// cursor here: a record's [`transport::Verdict::Accepted`] moves it
+    /// past that record, and only where it stands at that record, so it
+    /// advances contiguously; [`transport::Verdict::Refused`] moves it the
+    /// same way, as a log has no place to reject a record into and a
     /// refused one is not read again; [`transport::Verdict::Failed`] leaves
     /// it, and the failed record and those after it are fetched again (at
     /// least once, never a skip).
     fn receive_up_to(&self, most: usize) -> Result<Vec<Arrived>> {
+        let from = self.reading.next();
         let records = self.fetchers.exchange(
             self.bootstrap.as_str(),
             || self.connect(),
-            |client| client.fetch(&self.topic, self.partition, self.cursor()),
+            |client| client.fetch(&self.topic, self.partition, from),
         )?;
-        let mut arrived = Vec::with_capacity(records.len());
-        for record in records.into_iter().take(most) {
-            let offset = record.offset;
-            arrived.push(
-                Arrived::whole(
-                    format!(
-                        "kafka://{}/{}/{}?offset={offset}",
-                        self.bootstrap, self.topic, self.partition
-                    ),
-                    record.value.unwrap_or_default(),
-                    self.cursor.advancing(offset, offset + 1),
-                )
-                .detected()
-                .with_headers(Headers::of("kafka").octets(record.headers)),
-            );
-        }
-        Ok(arrived)
+        let origin = format!(
+            "kafka://{}/{}/{}",
+            self.bootstrap, self.topic, self.partition
+        );
+        Ok(self.reading.hand_up(from, records, most, &origin))
     }
 
     fn sending(&self) -> transport::Sending {
@@ -265,7 +261,7 @@ impl Transport for KafkaTransport {
     }
 
     /// Produce on the connection kept for the broker, connected on the
-    /// first send to it, acknowledged by the leader.
+    /// first send to it, acknowledged by all in-sync replicas.
     /// The key is the record's key. A broker appends a record produced
     /// again — an idempotent producer's deduplication holds within one
     /// producer session only — so the key is what a consumer recognizes a
@@ -332,7 +328,7 @@ impl Loopback for KafkaTransport {
     }
 
     /// A producer of its own to `address`, one record on this transport's
-    /// topic, acknowledged by the leader before it returns.
+    /// topic, acknowledged by all in-sync replicas before it returns.
     fn send_to(&self, address: &str, payload: &[u8]) -> Result<()> {
         let mut near = Self::new(address, &self.topic).on_partition(self.partition);
         near.timeout = self.timeout;
@@ -459,6 +455,72 @@ mod tests {
             "only the failed record is fetched again"
         );
         assert!(far_end.claims().is_none());
+    }
+
+    #[test]
+    fn a_produce_asks_every_in_sync_replica_to_acknowledge() {
+        let far_end = KafkaTransport::new("127.0.0.1:0", "orders").timing_out_after(secs(2));
+        let (listener, address) = far_end.bind().expect("binding");
+        let near = KafkaTransport::new(address, "orders").timing_out_after(secs(2));
+        std::thread::scope(|scope| {
+            let sender = scope.spawn(|| near.send("orders", b"durable"));
+            let mut session = far_end.accept_one(&listener).expect("accepting");
+            assert_eq!(session.acks(), None);
+            let produced = session.next_produce().expect("produce").expect("one");
+            assert_eq!(produced.bytes, b"durable");
+            assert_eq!(
+                session.acks(),
+                Some(-1),
+                "acks on the wire: all in-sync replicas"
+            );
+            sender.join().expect("thread").expect("sending");
+        });
+    }
+
+    #[test]
+    fn whole_batches_fetched_hand_each_record_up_once_in_order() {
+        let far_end = KafkaTransport::new("127.0.0.1:0", "orders").timing_out_after(secs(2));
+        let (listener, address) = far_end.bind().expect("binding");
+        let near = KafkaTransport::new(address, "orders")
+            .from_offset(2)
+            .timing_out_after(secs(2));
+        std::thread::scope(|scope| {
+            let receiver = scope.spawn(|| {
+                // Asked again at once, as the runtime asks a waiting
+                // Location, while the first two are still in their cycle.
+                let first = near.receive_up_to(2)?;
+                let second = near.receive_up_to(2)?;
+                let mut seen = Vec::new();
+                for arrived in first.into_iter().chain(second) {
+                    seen.push(arrived.taken()?.bytes);
+                }
+                let rest = near.receive()?.len();
+                Ok::<_, transport::TransportError>((seen, rest))
+            });
+            let values: [&[u8]; 6] = [b"zero", b"one", b"two", b"three", b"four", b"five"];
+            let mut session = far_end
+                .accept_one(&listener)
+                .expect("accepting")
+                .with_records("orders", &values)
+                .in_batches(4);
+            let mut fetched_from = Vec::new();
+            while let Some(event) = session.next_event().expect("serving") {
+                if let Event::Fetched { offset, .. } = event {
+                    fetched_from.push(offset);
+                }
+                if fetched_from.len() == 3 {
+                    break;
+                }
+            }
+            let (seen, rest) = receiver.join().expect("thread").expect("receiving");
+            assert_eq!(seen, [&b"two"[..], b"three", b"four", b"five"]);
+            assert_eq!(
+                rest, 0,
+                "the batch's records below 6 are not handed up again"
+            );
+            assert_eq!(fetched_from, [2, 4, 6]);
+        });
+        assert_eq!(near.cursor(), 6);
     }
 
     #[test]
