@@ -46,6 +46,7 @@ pub use session::{Event, Session};
 use transport::ArrivalIdentity;
 use transport::Configured;
 use transport::arrived::next_arrival;
+use transport::destination;
 use transport::error::Result;
 use transport::listening::{Accepting, Listening};
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
@@ -142,13 +143,11 @@ impl KafkaTransport {
 
     /// Where a target names the broker and topic itself —
     /// `kafka://host:9092/orders` — or is a topic alone on this transport's
-    /// cluster.
+    /// cluster, or empty and this transport's topic
+    /// (`transport::destination::on_server`).
     fn resolve<'a>(&'a self, target: &'a str) -> (&'a str, &'a str) {
-        match Target::under(Self::SCHEMES, target).map(|named| (named.authority(), named.path())) {
-            Some((peer, "")) => (peer, &self.topic),
-            Some(pair) => pair,
-            None => (&self.bootstrap, target),
-        }
+        let named = Target::under(Self::SCHEMES, target);
+        destination::on_server(target, named, (&self.bootstrap, &self.topic))
     }
 }
 
@@ -197,6 +196,11 @@ impl Configured for KafkaTransport {
 
     /// The schemes a Location's address is entered with to choose this technology.
     const SCHEMES: &'static [&'static str] = &["kafka"];
+
+    /// The topic setting: the address names only the broker.
+    fn own_target(_address: &str) -> &str {
+        destination::OWN
+    }
 
     fn configured(address: &str, settings: &Read) -> Result<Self> {
         let mut transport = Self::new(address, settings.text("topic"));
@@ -368,6 +372,33 @@ mod tests {
             panic!("a Send Location reads from no offset");
         };
         assert!(refused.message.contains("\"offset\""), "{refused}");
+    }
+
+    #[test]
+    fn a_send_location_produces_to_its_topic_and_a_target_naming_another_wins() {
+        use xcore::settings::Given;
+        let far_end = KafkaTransport::new("127.0.0.1:0", "orders").timing_out_after(secs(2));
+        let (listener, address) = far_end.bind().expect("binding");
+        let location = format!("kafka://{address}");
+        let near = std::thread::spawn(move || {
+            let given = [
+                ("topic".to_string(), Given::Text("orders".to_string())),
+                ("timeout".to_string(), Given::Text("2s".to_string())),
+            ];
+            let near = KafkaTransport::open(&location, Applies::Send, &given)?;
+            near.send(KafkaTransport::own_target(&location), b"own")?;
+            near.send("invoices", b"other")
+        });
+        let mut session = far_end.accept_one(&listener).expect("accepting");
+        let own = session.next_produce().expect("own").expect("a record");
+        assert!(own.origin_uri.contains("/orders/0?"), "{}", own.origin_uri);
+        let other = session.next_produce().expect("other").expect("a record");
+        assert!(
+            other.origin_uri.contains("/invoices/0?"),
+            "{}",
+            other.origin_uri
+        );
+        near.join().expect("thread").expect("producing");
     }
 
     #[test]
