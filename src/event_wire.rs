@@ -3,10 +3,12 @@
 //! subscription over (ADR-0065 clause 3), and the read side a receiving
 //! Xmip turns a record back into an event with.
 //!
-//! What goes on the record is decided once, in `xmip-core-event`'s
-//! binding: this file only puts a [`Carried`] where the Kafka protocol
-//! binding 1.0.2 puts it — the body as the record's value, every `ce_`
-//! attribute as a record header, and the content type as the
+//! **The Kafka protocol binding's rules are here** ([`KafkaEventRules`],
+//! 1.0.2): an attribute's header is `ce_` and its name, matched exactly,
+//! its value as it is. The two modes over them are `xmip-core-event`'s,
+//! once (`event::binding::Rules`). This file puts the [`Carried`] they
+//! write where the binding puts it — the body as the record's value, every
+//! `ce_` attribute as a record header, and the content type as the
 //! `content-type` header — and takes it back off a record the same way.
 //! One record per event, produced as soon as the forwarder has it, and
 //! acknowledged by all in-sync replicas before [`Wire::carry`] answers `Ok`: at
@@ -27,7 +29,7 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use event::binding::Carried;
+use event::binding::{Carried, Rules};
 use event::wire::Wire;
 use transport::Pool;
 use xcore::Failure;
@@ -38,6 +40,20 @@ use crate::records::{Entry, Header, Record};
 
 /// The record header a `WireEvent`'s content type travels in.
 pub const CONTENT_TYPE: &str = "content-type";
+
+/// The prefix an attribute's record header carries.
+pub const PREFIX: &str = "ce_";
+
+/// The Kafka protocol binding's rules: `ce_` headers, matched exactly,
+/// each value as it is.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct KafkaEventRules;
+
+impl Rules for KafkaEventRules {
+    fn prefix(&self) -> &'static str {
+        PREFIX
+    }
+}
 
 /// Where one Party's events are produced, and the name the producer
 /// presents there.
@@ -118,6 +134,10 @@ impl Default for EventWire {
 }
 
 impl Wire for EventWire {
+    fn rules(&self) -> &dyn Rules {
+        &KafkaEventRules
+    }
+
     /// One record on the Party's topic, acknowledged by all in-sync replicas.
     fn carry(&self, party: PartyId, carried: &Carried) -> Result<(), Failure> {
         let topic = self.topics.get(&party).ok_or_else(|| {
@@ -154,7 +174,7 @@ pub fn headers(carried: &Carried) -> Vec<Header> {
     content_type.chain(attributes).collect()
 }
 
-/// What `record` carries, for the binding to read a `WireEvent` from:
+/// What `record` carries, for [`KafkaEventRules`] to read a `WireEvent` from:
 /// its `content-type` header as the content type, every other header as
 /// text, its value as the body.
 #[must_use]
