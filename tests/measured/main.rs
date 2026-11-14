@@ -19,11 +19,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use event::binding::{Binding, Mode};
-use event::forward::Forwarder;
 use resilience::Guard;
 use retry::Retry;
 use transport::Transport;
 use transport::latency::TcpControl;
+use xcluster::delivery::forward::Forwarder;
 use xcore::latency::{spin, spread};
 use xcore::processor_time::ProcessorTime;
 use xmip_core_transport_kafka::{Event, KafkaTransport};
