@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use event::binding::{Binding, Mode};
+use event::binding::Mode;
 use resilience::Guard;
 use retry::Retry;
 use transport::Transport;
@@ -106,12 +106,7 @@ fn an_event_reaches_the_far_end_within_a_millisecond_apart_from_load() {
     let at = audit_at("latency");
     let hub = Arc::new(allowing());
     let (address, told) = far_end(0);
-    let mut forwarder = Forwarder::new(
-        subscribed(&hub, &at),
-        Binding::Kafka,
-        Mode::Binary,
-        wire(&address),
-    );
+    let mut forwarder = Forwarder::new(subscribed(&hub, &at), Mode::Binary, wire(&address));
     // The connection is opened once, before the rounds: what is measured
     // is an Event's way, not a connect.
     let _ = hub.publish(published());
