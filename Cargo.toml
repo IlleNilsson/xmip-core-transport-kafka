@@ -51,10 +51,12 @@ authorize-party = { package = "xmip-core-authorize-party", git = "https://github
 # The loopback payloads and the latency spread the tests drive, from the
 # capability's test support and never a production build (ADR-0044).
 transport = { package = "xmip-core-transport", git = "https://github.com/IlleNilsson/xmip-core-transport", branch = "main", features = ["test-support"] }
-# The subscriber the forwarding tests subscribe as, a proven caller the
-# event capability's test fixture builds (`subscriber::fixture`): test
-# support, as every crate's fixture is, and never a production build.
-event = { package = "xmip-core-event", git = "https://github.com/IlleNilsson/xmip-core-event", branch = "main", features = ["test-support"] }
+# The hub the forwarding tests subscribe to, the forwarder they carry
+# through and the subscriber they subscribe as, a proven caller the
+# delivery's test fixture builds (`delivery::subscriber::fixture`): test
+# support, as every crate's fixture is, and never a production build
+# (ADR-0065, amendment 2026-11-13).
+xcluster = { package = "xmip-core-cluster", git = "https://github.com/IlleNilsson/xmip-core-cluster", branch = "main", default-features = false, features = ["test-support"] }
 # The processor time an Event's threads used, which the tests hold.
 xcore = { package = "xmip-core", git = "https://github.com/IlleNilsson/xmip-core", branch = "main", features = ["test-support"] }
 # The forwarding tests: a subscriber's audit, the stage an Event reports,

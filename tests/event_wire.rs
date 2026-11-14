@@ -10,9 +10,9 @@ use std::time::Duration;
 
 use event::Event;
 use event::binding::{Binding, Mode};
-use event::forward::Forwarder;
 use resilience::Guard;
 use retry::Retry;
+use xcluster::delivery::forward::Forwarder;
 use xmip_core_transport_kafka::event_wire::carried;
 
 #[path = "event_wire/fixture.rs"]
