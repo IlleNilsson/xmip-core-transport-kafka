@@ -33,8 +33,10 @@ The connections to each Party are the capability's `Pool`, kept between
 events. `event_wire::carried`
 is the read side: a record a receiving Xmip fetched, as `KafkaEventRules`
 reads a `WireEvent` from. The module's timing program, `tests/measured`, holds
-publish to far-end receipt to a millisecond at the median and five at the
-99th percentile, apart from load.
+publish to far-end receipt round by round beside a plain wake, the fastest
+of five (`xcore::latency::Rounds`): under a millisecond beyond its two
+wakes, and this process's processor time across it under a millisecond
+beyond the plain wake's.
 
 A Send Location produces on a connection kept per broker (`transport::Pool`). Until 2026-09-27 every send connected.
 
