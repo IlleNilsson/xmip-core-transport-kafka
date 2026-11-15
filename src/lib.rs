@@ -102,13 +102,6 @@ impl KafkaTransport {
         self
     }
 
-    /// Give up on a broker that stops mid-message.
-    #[must_use]
-    pub const fn timing_out_after(mut self, timeout: Duration) -> Self {
-        self.timeout = Some(timeout);
-        self
-    }
-
     /// Past the last record acknowledged in order: where a receive reads
     /// from once nothing it handed up is still in its receive cycle.
     #[must_use]
@@ -184,13 +177,11 @@ impl Configured for KafkaTransport {
                 meaning: "The offset the first receive reads from; the beginning when left out.",
                 applies: Applies::Receive,
             },
-            Setting {
-                name: "timeout",
-                kind: Kind::Duration,
-                presence: Presence::Optional,
-                meaning: "How long a broker that stops mid-message is waited on.",
-                applies: Applies::Both,
-            },
+            transport::configured::timeout(
+                Applies::Both,
+                None,
+                "How long a broker that stops mid-message is waited on.",
+            ),
         ],
     };
 
@@ -202,6 +193,10 @@ impl Configured for KafkaTransport {
         destination::OWN
     }
 
+    fn timeout_kept(&mut self) -> Option<&mut dyn transport::configured::TimeoutKept> {
+        Some(&mut self.timeout)
+    }
+
     fn configured(address: &str, settings: &Read) -> Result<Self> {
         let mut transport = Self::new(address, settings.text("topic"));
         if let Some(partition) = settings.optional_integer("partition") {
@@ -211,10 +206,7 @@ impl Configured for KafkaTransport {
         if let Some(offset) = settings.optional_integer("offset") {
             transport = transport.from_offset(offset);
         }
-        Ok(match settings.optional_duration("timeout") {
-            Some(timeout) => transport.timing_out_after(timeout),
-            None => transport,
-        })
+        Ok(transport)
     }
 }
 
