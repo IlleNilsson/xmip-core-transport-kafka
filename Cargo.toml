@@ -63,6 +63,8 @@ xcore = { package = "xmip-core", git = "https://github.com/IlleNilsson/xmip-core
 # The forwarding tests: a subscriber's audit, the stage an Event reports,
 # and one real retry guard.
 audit = { package = "xmip-core-audit", git = "https://github.com/IlleNilsson/xmip-core-audit", branch = "main" }
+# The sink that audit keeps its records in, read back from the file.
+audit-file = { package = "xmip-core-audit-file", git = "https://github.com/IlleNilsson/xmip-core-audit-file", branch = "main" }
 node = { package = "xmip-core-node", git = "https://github.com/IlleNilsson/xmip-core-node", branch = "main" }
 retry = { package = "xmip-core-resilience-retry", git = "https://github.com/IlleNilsson/xmip-core-resilience-retry", branch = "main" }
 
