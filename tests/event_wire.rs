@@ -58,7 +58,7 @@ fn the_kafka_binary_example_reads() {
 
 #[test]
 fn a_published_event_arrives_as_the_same_event_in_either_mode() {
-    let at = audit_at("modes");
+    let (_folder, at) = audit_at("modes");
     for mode in [Mode::Structured, Mode::Binary] {
         let hub = allowing();
         let (address, told) = far_end(0);
@@ -94,7 +94,7 @@ fn a_published_event_arrives_as_the_same_event_in_either_mode() {
 
 #[test]
 fn a_leader_that_refuses_is_retried_and_the_events_arrive_in_order() {
-    let at = audit_at("again");
+    let (_folder, at) = audit_at("again");
     let hub = allowing();
     let (address, told) = far_end(2);
     let subscription = subscribed(&hub, &at);

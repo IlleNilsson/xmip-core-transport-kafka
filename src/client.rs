@@ -116,8 +116,7 @@ impl Client {
                     leader = brokers
                         .iter()
                         .find(|(node, _)| *node == leader_node)
-                        .map(|(_, address)| address.clone())
-                        .unwrap_or_default();
+                        .map_or_default(|(_, address)| address.clone());
                 }
                 partitions.push(partition);
             }

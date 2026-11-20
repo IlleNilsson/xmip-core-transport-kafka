@@ -28,8 +28,6 @@ codec = { package = "xmip-core-library-codec", git = "https://github.com/IlleNil
 # through the runtime; a Technology may depend on Foundation
 # (repository-model.md section 4).
 event = { package = "xmip-core-event", git = "https://github.com/IlleNilsson/xmip-core-event", branch = "main" }
-# The failure a Wire's attempt answers with, which the guards judge.
-resilience = { package = "xmip-core-resilience", git = "https://github.com/IlleNilsson/xmip-core-resilience", branch = "main" }
 # The Party a Wire carries to, by identifier.
 xcore = { package = "xmip-core", git = "https://github.com/IlleNilsson/xmip-core", branch = "main" }
 
@@ -60,12 +58,17 @@ transport = { package = "xmip-core-transport", git = "https://github.com/IlleNil
 xcluster = { package = "xmip-core-cluster", git = "https://github.com/IlleNilsson/xmip-core-cluster", branch = "main", default-features = false, features = ["test-support"] }
 # The processor time an Event's threads used, which the tests hold.
 xcore = { package = "xmip-core", git = "https://github.com/IlleNilsson/xmip-core", branch = "main", features = ["test-support"] }
+# A test's own temporary folder (`file::temporary`); for the tests only.
+file = { package = "xmip-core-library-file", git = "https://github.com/IlleNilsson/xmip-core-library-file", branch = "main", features = ["test-support"] }
 # The forwarding tests: a subscriber's audit, the stage an Event reports,
 # and one real retry guard.
 audit = { package = "xmip-core-audit", git = "https://github.com/IlleNilsson/xmip-core-audit", branch = "main" }
 # The sink that audit keeps its records in, read back from the file.
 audit-file = { package = "xmip-core-audit-file", git = "https://github.com/IlleNilsson/xmip-core-audit-file", branch = "main" }
 node = { package = "xmip-core-node", git = "https://github.com/IlleNilsson/xmip-core-node", branch = "main" }
+# The guard the event-wire tests judge an attempt by (`resilience::Guard`);
+# the library itself uses none of the capability (unused_dependencies).
+resilience = { package = "xmip-core-resilience", git = "https://github.com/IlleNilsson/xmip-core-resilience", branch = "main" }
 retry = { package = "xmip-core-resilience-retry", git = "https://github.com/IlleNilsson/xmip-core-resilience-retry", branch = "main" }
 
 [lints.rust]

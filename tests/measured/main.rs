@@ -115,7 +115,7 @@ const EVENT_WAKES: u32 = 2;
 
 #[test]
 fn an_event_reaches_the_far_end_within_a_millisecond_apart_from_load() {
-    let at = audit_at("latency");
+    let (_folder, at) = audit_at("latency");
     let hub = Arc::new(allowing());
     let (address, told) = far_end(0);
     let mut forwarder = Forwarder::new(subscribed(&hub, &at), Mode::Binary, wire(&address));
