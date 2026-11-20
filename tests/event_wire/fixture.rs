@@ -2,7 +2,6 @@
 //! hub, its subscription and Event, the leader that takes its records and
 //! the wire that reaches it.
 
-use std::fs;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -16,6 +15,7 @@ use authorize_party::PartyPolicy;
 use event::Event;
 use event::filter::Filter;
 use event::outcome::Outcome;
+use file::temporary::Folder;
 use node::Stage;
 use xcluster::delivery::hub::{EventSubscription, Hub};
 use xcluster::delivery::subscriber::fixture;
@@ -37,12 +37,12 @@ pub const TOPIC: &str = "xmip.events";
 
 pub const TIMEOUT: Duration = Duration::from_secs(2);
 
-/// A temporary audit directory of its own, never empty and never the
-/// estate's.
-pub fn audit_at(name: &str) -> PathBuf {
-    let at = std::env::temp_dir().join(format!("xmip-kafka-{name}-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&at);
-    at
+/// A temporary audit directory of its own, not made yet and never the
+/// estate's, in a folder removed when the test ends.
+pub fn audit_at(name: &str) -> (Folder, PathBuf) {
+    let folder = Folder::new(&format!("kafka-{name}"));
+    let at = folder.join("audit");
+    (folder, at)
 }
 
 pub fn subscribed(hub: &Hub, at: &Path) -> EventSubscription {
