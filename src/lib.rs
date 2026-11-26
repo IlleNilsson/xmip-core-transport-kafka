@@ -27,33 +27,56 @@
 //! [`event_wire`] produces a `WireEvent` as one record — the body
 //! its value, the attributes and the content type its headers, as the
 //! wire event's Kafka binding says — and reads one back off a record.
+//!
+//! **Built with its `declaration` feature alone** the crate is
+//! [`declaration`], what a Location of it is configured with, and none of
+//! the code above, which is behind the default feature: what the surfaces'
+//! library carries (ADR-0064, amendment 2026-11-26).
 
+#[cfg(feature = "default")]
 pub mod client;
+#[cfg(feature = "declaration")]
+pub mod declaration;
+#[cfg(feature = "default")]
 pub mod event_wire;
+#[cfg(feature = "default")]
 pub mod reading;
+#[cfg(feature = "default")]
 pub mod records;
+#[cfg(feature = "default")]
 pub mod session;
+#[cfg(feature = "default")]
 pub mod wire;
 
+#[cfg(feature = "default")]
 use std::net::TcpListener;
+#[cfg(feature = "default")]
 use std::time::Duration;
 
+#[cfg(feature = "default")]
 pub use client::{Client, TopicMetadata};
+#[cfg(feature = "default")]
 use net::Target;
+#[cfg(feature = "default")]
 pub use reading::Reading;
+#[cfg(feature = "default")]
 pub use records::Record;
+#[cfg(feature = "default")]
 pub use session::{Event, Session};
-use transport::ArrivalIdentity;
-use transport::Configured;
-use transport::arrived::next_arrival;
-use transport::destination;
+#[cfg(feature = "default")]
 use transport::error::Result;
+#[cfg(feature = "default")]
 use transport::listening::{Accepting, Listening};
+#[cfg(feature = "default")]
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
-use transport::socket;
+#[cfg(feature = "default")]
+use transport::{ArrivalIdentity, Configured, arrived::next_arrival, destination, socket};
+#[cfg(feature = "default")]
 use transport::{Arrived, Directions, Pool, Transport};
-use xcore::settings::{Applies, Kind, Presence, Read, Setting, Settings};
+#[cfg(feature = "default")]
+use xcore::settings::{Read, Settings};
 
+#[cfg(feature = "default")]
 pub struct KafkaTransport {
     bootstrap: String,
     topic: String,
@@ -71,6 +94,7 @@ pub struct KafkaTransport {
     fetchers: Pool<Client>,
 }
 
+#[cfg(feature = "default")]
 impl KafkaTransport {
     /// Speak to the cluster at `bootstrap` about `topic`, partition 0,
     /// reading from its beginning.
@@ -144,49 +168,10 @@ impl KafkaTransport {
     }
 }
 
+#[cfg(feature = "default")]
 impl Configured for KafkaTransport {
-    /// The address is the bootstrap broker, `host:9092`, both sides ask
-    /// first.
-    const SETTINGS: &'static Settings = &Settings {
-        technology: env!("CARGO_PKG_NAME"),
-        settings: &[
-            Setting {
-                name: "topic",
-                kind: Kind::Text,
-                presence: Presence::Required,
-                meaning: "The topic a Receive Location fetches, or a Send Location produces to.",
-                applies: Applies::Both,
-            },
-            Setting {
-                name: "partition",
-                kind: Kind::Integer {
-                    minimum: 0,
-                    maximum: i32::MAX as i64,
-                },
-                presence: Presence::Optional,
-                meaning: "The partition fetched from and produced to; partition 0 when left out.",
-                applies: Applies::Both,
-            },
-            Setting {
-                name: "offset",
-                kind: Kind::Integer {
-                    minimum: 0,
-                    maximum: i64::MAX,
-                },
-                presence: Presence::Optional,
-                meaning: "The offset the first receive reads from; the beginning when left out.",
-                applies: Applies::Receive,
-            },
-            transport::configured::timeout(
-                Applies::Both,
-                None,
-                "How long a broker that stops mid-message is waited on.",
-            ),
-        ],
-    };
-
-    /// The schemes a Location's address is entered with to choose this technology.
-    const SCHEMES: &'static [&'static str] = &["kafka"];
+    const SETTINGS: &'static Settings = declaration::SETTINGS;
+    const SCHEMES: &'static [&'static str] = declaration::SCHEMES;
 
     /// The topic setting: the address names only the broker.
     fn own_target(_address: &str) -> &str {
@@ -210,6 +195,7 @@ impl Configured for KafkaTransport {
     }
 }
 
+#[cfg(feature = "default")]
 impl Transport for KafkaTransport {
     fn name(&self) -> &'static str {
         "kafka"
@@ -268,6 +254,7 @@ impl Transport for KafkaTransport {
     }
 }
 
+#[cfg(feature = "default")]
 impl KafkaTransport {
     /// The one send: one record on the target's topic, under `key` where
     /// there is one, on the connection kept for its broker.
@@ -285,6 +272,7 @@ impl KafkaTransport {
     }
 }
 
+#[cfg(feature = "default")]
 impl KafkaTransport {
     /// Both ends on this machine: an ephemeral local port, the loopback
     /// timeout, one topic called `probe`.
@@ -299,6 +287,7 @@ impl KafkaTransport {
 /// technology that speaks Kafka on the wire (redpanda). It holds the timeout
 /// rather than the transport: the transport carries a cursor under a lock,
 /// and a far end has no offset to keep.
+#[cfg(feature = "default")]
 #[must_use]
 pub fn producing(timeout: Option<Duration>) -> impl Accepting {
     move |listener: &TcpListener| {
@@ -309,6 +298,7 @@ pub fn producing(timeout: Option<Duration>) -> impl Accepting {
     }
 }
 
+#[cfg(feature = "default")]
 impl Loopback for KafkaTransport {
     fn arrival_identity(&self) -> ArrivalIdentity {
         ArrivalIdentity::Unnamed(
@@ -338,6 +328,7 @@ mod tests {
     use std::assert_matches;
     use transport::Refusal;
     use transport::payload::{edge_payloads, sized_payloads};
+    use xcore::settings::Applies;
 
     fn secs(n: u64) -> Duration {
         Duration::from_secs(n)

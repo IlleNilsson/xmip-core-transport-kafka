@@ -12,21 +12,34 @@ path = "src/lib.rs"
 
 [dependencies]
 # A Technology depends on its parent Capability, never the reverse
-# (repository-model.md). Kafka is a size, a header and typed fields.
+# (repository-model.md). Kafka is a size, a header and typed fields. Its
+# declaration takes the capability's `timeout`
+# (`transport::configured::timeout`).
 transport = { package = "xmip-core-transport", git = "https://github.com/IlleNilsson/xmip-core-transport", branch = "main" }
 # A target read as a URI writes it (`net::Target`).
-net = { package = "xmip-core-library-net", git = "https://github.com/IlleNilsson/xmip-core-library-net", branch = "main" }
+net = { package = "xmip-core-library-net", git = "https://github.com/IlleNilsson/xmip-core-library-net", branch = "main", optional = true }
 # The estate's encoding primitives: the byte cursor and writer, the varint and zig-zag, and CRC-32C.
-codec = { package = "xmip-core-library-codec", git = "https://github.com/IlleNilsson/xmip-core-library-codec", branch = "main" }
+codec = { package = "xmip-core-library-codec", git = "https://github.com/IlleNilsson/xmip-core-library-codec", branch = "main", optional = true }
 # The event capability's wire (ADR-0065 clause 3): the Wire this crate
 # implements, the Carried it puts on a record and the Rules its Kafka
 # binding answers by — the two modes over them are written there, once,
 # and the Kafka binding's prefix here. Every node links it already,
 # through the runtime; a Technology may depend on Foundation
 # (repository-model.md section 4).
-event = { package = "xmip-core-event", git = "https://github.com/IlleNilsson/xmip-core-event", branch = "main" }
-# The Party a Wire carries to, by identifier.
+event = { package = "xmip-core-event", git = "https://github.com/IlleNilsson/xmip-core-event", branch = "main", optional = true }
+# The Party a Wire carries to, by identifier, and the settings this
+# technology declares (xcore::settings).
 xcore = { package = "xmip-core", git = "https://github.com/IlleNilsson/xmip-core", branch = "main" }
+
+[features]
+# The technology: its code, everything it is built on, and its declaration.
+# Without it the crate is its declaration alone (ADR-0064, amendments
+# 2026-10-22 and 2026-11-26).
+default = ["declaration", "dep:net", "dep:codec", "dep:event"]
+# The declaration alone: what a Location of this technology is configured
+# with, `declaration::SETTINGS` and `SCHEMES`, and none of the code — what
+# the surfaces' library is to carry (open problem 48).
+declaration = []
 
 # The module's timing program (doc/governance/rust-style.md section 5c): a
 # plain cargo test leaves it out, and the landing runs it after every other
