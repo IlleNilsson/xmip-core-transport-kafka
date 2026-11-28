@@ -15,21 +15,21 @@ path = "src/lib.rs"
 # (repository-model.md). Kafka is a size, a header and typed fields. Its
 # declaration takes the capability's `timeout`
 # (`transport::configured::timeout`).
-transport = { package = "xmip-core-transport", git = "https://github.com/IlleNilsson/xmip-core-transport", branch = "main" }
+transport = { workspace = true }
 # A target read as a URI writes it (`net::Target`).
-net = { package = "xmip-core-library-net", git = "https://github.com/IlleNilsson/xmip-core-library-net", branch = "main", optional = true }
+net = { workspace = true, optional = true }
 # The estate's encoding primitives: the byte cursor and writer, the varint and zig-zag, and CRC-32C.
-codec = { package = "xmip-core-library-codec", git = "https://github.com/IlleNilsson/xmip-core-library-codec", branch = "main", optional = true }
+codec = { workspace = true, optional = true }
 # The event capability's wire (ADR-0065 clause 3): the Wire this crate
 # implements, the Carried it puts on a record and the Rules its Kafka
 # binding answers by — the two modes over them are written there, once,
 # and the Kafka binding's prefix here. Every node links it already,
 # through the runtime; a Technology may depend on Foundation
 # (repository-model.md section 4).
-event = { package = "xmip-core-event", git = "https://github.com/IlleNilsson/xmip-core-event", branch = "main", optional = true }
+event = { workspace = true, optional = true }
 # The Party a Wire carries to, by identifier, and the settings this
 # technology declares (xcore::settings).
-xcore = { package = "xmip-core", git = "https://github.com/IlleNilsson/xmip-core", branch = "main" }
+xcore = { workspace = true }
 
 [features]
 # The code and its declaration: the transport guide's "The declaration",
@@ -49,34 +49,34 @@ test = false
 [dev-dependencies]
 # The test cluster's names, from its `cluster.xmip` (`configure::fixture`;
 # ADR-0056, amendment 2026-10-03): no test writes a cluster or node name.
-configure = { package = "xmip-core-configure", git = "https://github.com/IlleNilsson/xmip-core-configure", branch = "main", features = ["test-support"] }
+configure = { workspace = true, features = ["test-support"] }
 # The policy the forwarding tests hand their hub, allowing their Party:
 # the authorize capability's party technology. Being in the process admits
 # nobody.
-authorize-party = { package = "xmip-core-authorize-party", git = "https://github.com/IlleNilsson/xmip-core-authorize-party", branch = "main" }
+authorize-party = { workspace = true }
 # The loopback payloads and the latency spread the tests drive, from the
 # capability's test support and never a production build (ADR-0044).
-transport = { package = "xmip-core-transport", git = "https://github.com/IlleNilsson/xmip-core-transport", branch = "main", features = ["test-support"] }
+transport = { workspace = true, features = ["test-support"] }
 # The hub the forwarding tests subscribe to, the forwarder they carry
 # through and the subscriber they subscribe as, a proven caller the
 # delivery's test fixture builds (`delivery::subscriber::fixture`): test
 # support, as every crate's fixture is, and never a production build
 # (ADR-0065, amendment 2026-11-13).
-xcluster = { package = "xmip-core-cluster", git = "https://github.com/IlleNilsson/xmip-core-cluster", branch = "main", default-features = false, features = ["test-support"] }
+xcluster = { workspace = true, default-features = false, features = ["test-support"] }
 # The processor time an Event's threads used, which the tests hold.
-xcore = { package = "xmip-core", git = "https://github.com/IlleNilsson/xmip-core", branch = "main", features = ["test-support"] }
+xcore = { workspace = true, features = ["test-support"] }
 # The forwarding tests: a subscriber's audit, the stage an Event reports,
 # and one real retry guard.
-audit = { package = "xmip-core-audit", git = "https://github.com/IlleNilsson/xmip-core-audit", branch = "main" }
+audit = { workspace = true }
 # The sink that audit keeps its records in, read back from the file, and
 # the test's own folder it writes in, removed once audit's keeper kept them
 # (`audit_file::temporary`).
-audit-file = { package = "xmip-core-audit-file", git = "https://github.com/IlleNilsson/xmip-core-audit-file", branch = "main", features = ["test-support"] }
-node = { package = "xmip-core-node", git = "https://github.com/IlleNilsson/xmip-core-node", branch = "main" }
+audit-file = { workspace = true, features = ["test-support"] }
+node = { workspace = true }
 # The guard the event-wire tests judge an attempt by (`resilience::Guard`);
 # the library itself uses none of the capability (unused_dependencies).
-resilience = { package = "xmip-core-resilience", git = "https://github.com/IlleNilsson/xmip-core-resilience", branch = "main" }
-retry = { package = "xmip-core-resilience-retry", git = "https://github.com/IlleNilsson/xmip-core-resilience-retry", branch = "main" }
+resilience = { workspace = true }
+retry = { workspace = true }
 
 [lints]
 workspace = true
